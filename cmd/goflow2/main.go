@@ -15,10 +15,12 @@ import (
 	"github.com/netsampler/goflow2/v3/pkg/goflow2/config"
 
 	_ "github.com/netsampler/goflow2/v3/format/binary"
+	_ "github.com/netsampler/goflow2/v3/format/csv"
 	_ "github.com/netsampler/goflow2/v3/format/json"
 	_ "github.com/netsampler/goflow2/v3/format/text"
 	_ "github.com/netsampler/goflow2/v3/transport/file"
 	_ "github.com/netsampler/goflow2/v3/transport/kafka"
+	_ "github.com/netsampler/goflow2/v3/transport/netcat"
 )
 
 var (

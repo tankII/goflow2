@@ -40,6 +40,13 @@ type KafkaDriver struct {
 	kafkaVersion          string
 	kafkaCompressionCodec string
 
+	kafkaSASLKerberosKeytab          string
+	kafkaSASLKerberosUsername        string
+	kafkaSASLKerberosRealm           string
+	kafkaSASLKerberosServiceName     string
+	kafkaSASLKerberosConfig          string
+	kafkaSASLKerberosDisablePAFXFAST bool
+
 	producer sarama.AsyncProducer
 
 	errors chan error
@@ -65,6 +72,7 @@ const (
 	KAFKA_SASL_PLAIN        KafkaSASLAlgorithm = "plain"
 	KAFKA_SASL_SCRAM_SHA256 KafkaSASLAlgorithm = "scram-sha256"
 	KAFKA_SASL_SCRAM_SHA512 KafkaSASLAlgorithm = "scram-sha512"
+	KAFKA_SASL_GSSAPI       KafkaSASLAlgorithm = "gssapi"
 )
 
 var (
@@ -80,12 +88,14 @@ var (
 		KAFKA_SASL_PLAIN:        true,
 		KAFKA_SASL_SCRAM_SHA256: true,
 		KAFKA_SASL_SCRAM_SHA512: true,
+		KAFKA_SASL_GSSAPI:       true,
 	}
 	saslAlgorithmsList = []string{
 		string(KAFKA_SASL_NONE),
 		string(KAFKA_SASL_PLAIN),
 		string(KAFKA_SASL_SCRAM_SHA256),
 		string(KAFKA_SASL_SCRAM_SHA512),
+		string(KAFKA_SASL_GSSAPI),
 	}
 )
 
@@ -99,7 +109,7 @@ func (d *KafkaDriver) Prepare() error {
 
 	flag.StringVar(&d.kafkaSASL, "transport.kafka.sasl", "none",
 		fmt.Sprintf(
-			"Use SASL to connect to Kafka, available settings: %s (TLS is recommended and the environment variables KAFKA_SASL_USER and KAFKA_SASL_PASS need to be set)",
+			"Use SASL to connect to Kafka, available settings: %s (for plain/scram, TLS is recommended and the environment variables KAFKA_SASL_USER and KAFKA_SASL_PASS need to be set)",
 			strings.Join(saslAlgorithmsList, ", ")))
 
 	flag.StringVar(&d.kafkaTopic, "transport.kafka.topic", "flow-messages", "Kafka topic to produce to")
@@ -114,6 +124,13 @@ func (d *KafkaDriver) Prepare() error {
 	flag.StringVar(&d.kafkaVersion, "transport.kafka.version", "2.8.0", "Kafka version")
 	flag.StringVar(&d.kafkaCompressionCodec, "transport.kafka.compression", "", "Kafka default compression")
 
+	flag.StringVar(&d.kafkaSASLKerberosKeytab, "transport.kafka.sasl.kerberos.keytab", "", "Kafka SASL (gssapi) keytab file path")
+	flag.StringVar(&d.kafkaSASLKerberosUsername, "transport.kafka.sasl.kerberos.username", "", "Kafka SASL (gssapi) client principal (without realm)")
+	flag.StringVar(&d.kafkaSASLKerberosRealm, "transport.kafka.sasl.kerberos.realm", "", "Kafka SASL (gssapi) client realm")
+	flag.StringVar(&d.kafkaSASLKerberosServiceName, "transport.kafka.sasl.kerberos.service-name", "kafka", "Kafka SASL (gssapi) service name")
+	flag.StringVar(&d.kafkaSASLKerberosConfig, "transport.kafka.sasl.kerberos.config", "", "Path to krb5.conf (defaults to KRB5_CONFIG or /etc/krb5.conf)")
+	flag.BoolVar(&d.kafkaSASLKerberosDisablePAFXFAST, "transport.kafka.sasl.kerberos.disable-paf-x-fast", false, "Disable PA-FX-FAST when using SASL (gssapi)")
+
 	return nil
 }
 
@@ -122,11 +139,11 @@ func (d *KafkaDriver) Errors() <-chan error {
 	return d.errors
 }
 
-// Init configures the Kafka producer and establishes connections.
-func (d *KafkaDriver) Init() error {
+// buildKafkaConfig assembles the sarama configuration from the driver flags.
+func (d *KafkaDriver) buildKafkaConfig() (*sarama.Config, error) {
 	kafkaConfigVersion, err := sarama.ParseKafkaVersion(d.kafkaVersion)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	kafkaConfig := sarama.NewConfig()
@@ -139,19 +156,8 @@ func (d *KafkaDriver) Init() error {
 	kafkaConfig.Producer.Partitioner = sarama.NewRoundRobinPartitioner
 
 	if d.kafkaCompressionCodec != "" {
-		/*
-			// when upgrading sarama, replace with:
-			// note: if the library adds more codecs, they will be supported natively
-			var cc *sarama.CompressionCodec
-
-			if err := cc.UnmarshalText([]byte(d.kafkaCompressionCodec)); err != nil {
-				return err
-			}
-			kafkaConfig.Producer.Compression = *cc
-		*/
-
 		if cc, ok := compressionCodecs[strings.ToLower(d.kafkaCompressionCodec)]; !ok {
-			return fmt.Errorf("compression codec does not exist")
+			return nil, fmt.Errorf("compression codec does not exist")
 		} else {
 			kafkaConfig.Producer.Compression = cc
 		}
@@ -160,7 +166,7 @@ func (d *KafkaDriver) Init() error {
 	if d.kafkaTLS {
 		rootCAs, err := x509.SystemCertPool()
 		if err != nil {
-			return fmt.Errorf("error initializing TLS: %v", err)
+			return nil, fmt.Errorf("error initializing TLS: %v", err)
 		}
 		kafkaConfig.Net.TLS.Enable = true
 		kafkaConfig.Net.TLS.Config = &tls.Config{
@@ -173,25 +179,25 @@ func (d *KafkaDriver) Init() error {
 		if d.kafkaServerCA != "" {
 			serverCaFile, err := os.Open(d.kafkaServerCA)
 			if err != nil {
-				return fmt.Errorf("error initializing server CA: %v", err)
+				return nil, fmt.Errorf("error initializing server CA: %v", err)
 			}
 
 			serverCaBytes, err := io.ReadAll(serverCaFile)
 			if err != nil {
 				if closeErr := serverCaFile.Close(); closeErr != nil {
-					return fmt.Errorf("error closing server CA: %v", closeErr)
+					return nil, fmt.Errorf("error closing server CA: %v", closeErr)
 				}
-				return fmt.Errorf("error reading server CA: %v", err)
+				return nil, fmt.Errorf("error reading server CA: %v", err)
 			}
 			if err := serverCaFile.Close(); err != nil {
-				return fmt.Errorf("error closing server CA: %v", err)
+				return nil, fmt.Errorf("error closing server CA: %v", err)
 			}
 
 			block, _ := pem.Decode(serverCaBytes)
 
 			serverCa, err := x509.ParseCertificate(block.Bytes)
 			if err != nil {
-				return fmt.Errorf("error parsing server CA: %v", err)
+				return nil, fmt.Errorf("error parsing server CA: %v", err)
 			}
 
 			certPool := x509.NewCertPool()
@@ -203,7 +209,7 @@ func (d *KafkaDriver) Init() error {
 		if d.kafkaClientCert != "" && d.kafkaClientKey != "" {
 			_, err := tls.LoadX509KeyPair(d.kafkaClientCert, d.kafkaClientKey)
 			if err != nil {
-				return fmt.Errorf("error initializing mTLS: %v", err)
+				return nil, fmt.Errorf("error initializing mTLS: %v", err)
 			}
 
 			kafkaConfig.Net.TLS.Config.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
@@ -225,32 +231,80 @@ func (d *KafkaDriver) Init() error {
 	if d.kafkaSASL != "" && kafkaSASL != KAFKA_SASL_NONE {
 		_, ok := saslAlgorithms[KafkaSASLAlgorithm(strings.ToLower(d.kafkaSASL))]
 		if !ok {
-			return errors.New("sasl algorithm does not exist")
+			return nil, errors.New("sasl algorithm does not exist")
 		}
 
 		kafkaConfig.Net.SASL.Enable = true
-		kafkaConfig.Net.SASL.User = os.Getenv("KAFKA_SASL_USER")
-		kafkaConfig.Net.SASL.Password = os.Getenv("KAFKA_SASL_PASS")
-		if kafkaConfig.Net.SASL.User == "" && kafkaConfig.Net.SASL.Password == "" {
-			return fmt.Errorf("kafka SASL config from environment was unsuccessful: KAFKA_SASL_USER and KAFKA_SASL_PASS need to be set")
-		}
 
-		if kafkaSASL == KAFKA_SASL_SCRAM_SHA256 || kafkaSASL == KAFKA_SASL_SCRAM_SHA512 {
-			kafkaConfig.Net.SASL.Handshake = true
+		if kafkaSASL == KAFKA_SASL_GSSAPI {
+			if d.kafkaSASLKerberosKeytab == "" {
+				return nil, fmt.Errorf("kafka SASL kerberos config was unsuccessful: transport.kafka.sasl.kerberos.keytab needs to be set")
+			}
+			if d.kafkaSASLKerberosUsername == "" {
+				return nil, fmt.Errorf("kafka SASL kerberos config was unsuccessful: transport.kafka.sasl.kerberos.username needs to be set")
+			}
+			if d.kafkaSASLKerberosRealm == "" {
+				return nil, fmt.Errorf("kafka SASL kerberos config was unsuccessful: transport.kafka.sasl.kerberos.realm needs to be set")
+			}
 
-			switch kafkaSASL {
-			case KAFKA_SASL_SCRAM_SHA512:
-				kafkaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
-					return &XDGSCRAMClient{HashGeneratorFcn: SHA512}
+			kcfg := d.kafkaSASLKerberosConfig
+			switch {
+			case strings.TrimSpace(kcfg) != "":
+			case os.Getenv("KRB5_CONFIG") != "":
+				kcfg = os.Getenv("KRB5_CONFIG")
+			default:
+				if _, err := os.Stat("/etc/krb5.conf"); err == nil {
+					kcfg = "/etc/krb5.conf"
 				}
-				kafkaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
-			case KAFKA_SASL_SCRAM_SHA256:
-				kafkaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
-					return &XDGSCRAMClient{HashGeneratorFcn: SHA256}
+			}
+			if kcfg == "" {
+				return nil, fmt.Errorf("kafka SASL kerberos config was unsuccessful: transport.kafka.sasl.kerberos.config must be set, or KRB5_CONFIG environment variable or /etc/krb5.conf must exist")
+			}
+
+			kafkaConfig.Net.SASL.Mechanism = sarama.SASLTypeGSSAPI
+			kafkaConfig.Net.SASL.GSSAPI = sarama.GSSAPIConfig{
+				AuthType:           sarama.KRB5_KEYTAB_AUTH,
+				Username:           d.kafkaSASLKerberosUsername,
+				KeyTabPath:         d.kafkaSASLKerberosKeytab,
+				KerberosConfigPath: kcfg,
+				ServiceName:        d.kafkaSASLKerberosServiceName,
+				Realm:              d.kafkaSASLKerberosRealm,
+				DisablePAFXFAST:    d.kafkaSASLKerberosDisablePAFXFAST,
+			}
+		} else {
+			kafkaConfig.Net.SASL.User = os.Getenv("KAFKA_SASL_USER")
+			kafkaConfig.Net.SASL.Password = os.Getenv("KAFKA_SASL_PASS")
+			if kafkaConfig.Net.SASL.User == "" && kafkaConfig.Net.SASL.Password == "" {
+				return nil, fmt.Errorf("kafka SASL config from environment was unsuccessful: KAFKA_SASL_USER and KAFKA_SASL_PASS need to be set")
+			}
+
+			if kafkaSASL == KAFKA_SASL_SCRAM_SHA256 || kafkaSASL == KAFKA_SASL_SCRAM_SHA512 {
+				kafkaConfig.Net.SASL.Handshake = true
+
+				switch kafkaSASL {
+				case KAFKA_SASL_SCRAM_SHA512:
+					kafkaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+						return &XDGSCRAMClient{HashGeneratorFcn: SHA512}
+					}
+					kafkaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
+				case KAFKA_SASL_SCRAM_SHA256:
+					kafkaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+						return &XDGSCRAMClient{HashGeneratorFcn: SHA256}
+					}
+					kafkaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
 				}
-				kafkaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
 			}
 		}
+	}
+
+	return kafkaConfig, nil
+}
+
+// Init configures the Kafka producer and establishes connections.
+func (d *KafkaDriver) Init() error {
+	kafkaConfig, err := d.buildKafkaConfig()
+	if err != nil {
+		return err
 	}
 
 	var addrs []string

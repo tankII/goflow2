@@ -191,25 +191,32 @@ func (m *ProtoProducerMessage) mapUnknown() map[string]interface{} {
 	return unkMap
 }
 
-// FormatMessageReflectCustom renders a custom-delimited representation.
-func (m *ProtoProducerMessage) FormatMessageReflectCustom(ext, quotes, sep, sign string, null bool) string {
+type valueRender struct {
+	val   string
+	isStr bool
+}
+
+type fieldPart struct {
+	finalName string
+	array     bool
+	length    int   // original slice length (used to mirror comma placement)
+	indices   []int // original indices of appended items
+	values    []valueRender
+}
+
+// renderFieldParts returns the per-field rendered values in formatter.Fields()
+// order. Fields that are missing (and not virtual) map to nil so callers may
+// either compact the output (text) or preserve column alignment (CSV).
+func (m *ProtoProducerMessage) renderFieldParts() []*fieldPart {
 	vfm := reflect.ValueOf(m)
 	vfm = reflect.Indirect(vfm)
 
-	var i int
 	fields := m.formatter.Fields()
-	fstr := make([]string, len(fields)) // todo: reuse with pool
-
+	parts := make([]*fieldPart, len(fields))
 	unkMap := m.mapUnknown()
 
-	// iterate through the fields requested by the user
-	for _, s := range fields {
+	for idx, s := range fields {
 		fieldName := s
-
-		fieldFinalName := s
-		if fieldRename, ok := m.formatter.Rename(s); ok && fieldRename != "" {
-			fieldFinalName = fieldRename
-		}
 
 		// get original name from structure
 		if fieldNameMap, ok := m.formatter.Remap(fieldName); ok && fieldNameMap != "" {
@@ -218,7 +225,7 @@ func (m *ProtoProducerMessage) FormatMessageReflectCustom(ext, quotes, sep, sign
 
 		// get renderer
 		renderer, okRenderer := m.formatter.Render(fieldName)
-		if !okRenderer { // todo: change to renderer check
+		if !okRenderer {
 			renderer = NilRenderer
 		}
 
@@ -236,16 +243,15 @@ func (m *ProtoProducerMessage) FormatMessageReflectCustom(ext, quotes, sep, sign
 		}
 
 		isSlice := m.formatter.IsArray(fieldName)
+		part := &fieldPart{array: isSlice}
 
 		// render each item of the array independently
 		// note: isSlice is necessary to consider certain byte arrays in their entirety
 		// eg: IP addresses
 		if isSlice {
-			v := "["
-
 			if fieldValue.IsValid() {
-
 				c := fieldValue.Len()
+				part.length = c
 				for i := 0; i < c; i++ {
 					fieldValueI := fieldValue.Index(i)
 					var val interface{}
@@ -258,19 +264,13 @@ func (m *ProtoProducerMessage) FormatMessageReflectCustom(ext, quotes, sep, sign
 						continue
 					}
 					renderedType := reflect.TypeOf(rendered)
-					if renderedType.Kind() == reflect.String {
-						v += fmt.Sprintf("%s%v%s", quotes, rendered, quotes)
-					} else {
-						v += fmt.Sprintf("%v", rendered)
-					}
-
-					if i < c-1 {
-						v += ","
-					}
+					part.values = append(part.values, valueRender{
+						val:   fmt.Sprintf("%v", rendered),
+						isStr: renderedType.Kind() == reflect.String,
+					})
+					part.indices = append(part.indices, i)
 				}
 			}
-			v += "]"
-			fstr[i] = fmt.Sprintf("%s%s%s%s%s", quotes, fieldFinalName, quotes, sign, v)
 		} else {
 			var val interface{}
 			if fieldValue.IsValid() {
@@ -282,16 +282,80 @@ func (m *ProtoProducerMessage) FormatMessageReflectCustom(ext, quotes, sep, sign
 				continue
 			}
 			renderedType := reflect.TypeOf(rendered)
-			if renderedType.Kind() == reflect.String {
-				fstr[i] = fmt.Sprintf("%s%s%s%s%s%v%s", quotes, fieldFinalName, quotes, sign, quotes, rendered, quotes)
+			part.values = []valueRender{{
+				val:   fmt.Sprintf("%v", rendered),
+				isStr: renderedType.Kind() == reflect.String,
+			}}
+		}
+
+		// rename only affects the display name of the field
+		if fieldRename, ok := m.formatter.Rename(s); ok && fieldRename != "" {
+			part.finalName = fieldRename
+		} else {
+			part.finalName = s
+		}
+
+		parts[idx] = part
+	}
+	return parts
+}
+
+// FormatMessageReflectCustom renders a custom-delimited representation.
+func (m *ProtoProducerMessage) FormatMessageReflectCustom(ext, quotes, sep, sign string, null bool) string {
+	fstr := make([]string, 0, len(m.formatter.Fields()))
+
+	for _, part := range m.renderFieldParts() {
+		if part == nil {
+			continue
+		}
+
+		if part.array {
+			v := "["
+
+			for j, it := range part.values {
+				if it.isStr {
+					v += fmt.Sprintf("%s%v%s", quotes, it.val, quotes)
+				} else {
+					v += fmt.Sprintf("%v", it.val)
+				}
+
+				if part.indices[j] < part.length-1 {
+					v += ","
+				}
+			}
+			v += "]"
+			fstr = append(fstr, fmt.Sprintf("%s%s%s%s%s", quotes, part.finalName, quotes, sign, v))
+		} else {
+			if part.values[0].isStr {
+				fstr = append(fstr, fmt.Sprintf("%s%s%s%s%s%v%s", quotes, part.finalName, quotes, sign, quotes, part.values[0].val, quotes))
 			} else {
-				fstr[i] = fmt.Sprintf("%s%s%s%s%v", quotes, fieldFinalName, quotes, sign, rendered)
+				fstr = append(fstr, fmt.Sprintf("%s%s%s%s%v", quotes, part.finalName, quotes, sign, part.values[0].val))
 			}
 		}
-		i++
 
 	}
-	fstr = fstr[0:i]
 
 	return strings.Join(fstr, sep)
+}
+
+// CSVValues returns the rendered values in formatter.Fields() order. Missing
+// (non-virtual) fields map to empty strings so columns stay aligned.
+func (m *ProtoProducerMessage) CSVValues() []string {
+	parts := m.renderFieldParts()
+	out := make([]string, len(parts))
+	for i, part := range parts {
+		if part == nil {
+			continue
+		}
+		if part.array {
+			items := make([]string, len(part.values))
+			for j, it := range part.values {
+				items[j] = it.val
+			}
+			out[i] = "[" + strings.Join(items, ",") + "]"
+		} else {
+			out[i] = part.values[0].val
+		}
+	}
+	return out
 }
