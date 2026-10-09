@@ -109,7 +109,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	logger, err := logging.NewLogger(LogLevel, LogFmt)
+	logger, err := logging.NewLogger(logging.Options{Level: LogLevel, Format: LogFmt})
 	if err != nil {
 		log.Fatal("error parsing log level")
 	}

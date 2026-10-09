@@ -24,20 +24,21 @@ import (
 
 // App wires and runs the GoFlow2 application.
 type App struct {
-	cfg         *config.Config
-	logger      *slog.Logger
-	collector   *collector.Collector
-	persistence *persistence.Manager
-	transport   interface{ Close() error }
-	producer    interface{ Close() }
-	server      *http.Server
-	serverErr   chan error
-	collecting  atomic.Bool
+	cfg           *config.Config
+	logger        *slog.Logger
+	collector     *collector.Collector
+	persistence   *persistence.Manager
+	transport     interface{ Close() error }
+	producer      interface{ Close() }
+	routerCounter *metrics.RouterCounter
+	server        *http.Server
+	serverErr     chan error
+	collecting    atomic.Bool
 }
 
 // New constructs a new App from config.
 func New(cfg *config.Config) (*App, error) {
-	logger, err := logging.NewLogger(cfg.LogLevel, cfg.LogFmt)
+	logger, err := logging.NewLogger(logging.Options{Level: cfg.LogLevel, Format: cfg.LogFmt})
 	if err != nil {
 		return nil, fmt.Errorf("app: init logger: %w", err)
 	}
@@ -81,8 +82,10 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("app: build producer: %w", err)
 	}
 
+	deviceRC := metrics.NewRouterCounter(cfg.DeviceHourlyTTL, cfg.DeviceDailyTTL)
+
 	flowProducer = debug.WrapPanicProducer(flowProducer)
-	flowProducer = metrics.WrapPromProducer(flowProducer)
+	flowProducer = metrics.WrapPromProducer(flowProducer, deviceRC)
 
 	listeners, err := listen.ParseListenAddresses(cfg.ListenAddresses)
 	if err != nil {
@@ -95,6 +98,7 @@ func New(cfg *config.Config) (*App, error) {
 		Transport:     transporter,
 		Producer:      flowProducer,
 		TemplateStore: templateStore,
+		RouterCounter: deviceRC,
 		ErrCnt:        cfg.ErrCnt,
 		ErrInt:        cfg.ErrInt,
 		Logger:        logger,
@@ -104,19 +108,22 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	app := &App{
-		cfg:         cfg,
-		logger:      logger,
-		collector:   coll,
-		persistence: persist,
-		transport:   transporter,
-		producer:    flowProducer,
-		serverErr:   make(chan error, 1),
+		cfg:           cfg,
+		logger:        logger,
+		collector:     coll,
+		persistence:   persist,
+		transport:     transporter,
+		producer:      flowProducer,
+		routerCounter: deviceRC,
+		serverErr:     make(chan error, 1),
 	}
 
 	if cfg.Addr != "" {
 		mux := httpserver.New(httpserver.Config{
-			Addr:          cfg.Addr,
-			StoreHTTPPath: cfg.StoreHTTPPath,
+			Addr:            cfg.Addr,
+			StoreHTTPPath:   cfg.StoreHTTPPath,
+			DeviceStatsPath: cfg.DeviceStatsPath,
+			RouterCounter:   deviceRC,
 		}, persist.Document, app.collecting.Load)
 		app.server = &http.Server{
 			Addr:              cfg.Addr,
@@ -199,6 +206,9 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.collecting.Store(false)
 
 	a.collector.Stop()
+	if a.routerCounter != nil {
+		a.routerCounter.Stop()
+	}
 	a.producer.Close()
 	a.persistence.Close()
 	if err := a.transport.Close(); err != nil {
