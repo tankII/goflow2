@@ -7,10 +7,10 @@ BUILDINFOSDET ?=
 
 NAME          := goflow2
 DOCKER_IMAGE  ?= netsampler/$(NAME)
-VERSION       ?= $(shell git describe --abbrev --long HEAD)
+VERSION       ?= $(shell git describe --tags --abbrev --long HEAD 2>/dev/null || git rev-parse --short HEAD)
 ABBREV        ?= $(shell git rev-parse --short HEAD)
 COMMIT        ?= $(shell git rev-parse HEAD)
-TAG           ?= $(shell git describe --tags --abbrev=0 HEAD)
+TAG           ?= $(shell git describe --tags --abbrev=0 HEAD 2>/dev/null || echo dev)
 VERSION_PKG   ?= $(shell echo $(VERSION) | sed 's/^v//g')
 LICENSE       := BSD-3-Clause
 URL           := https://github.com/netsampler/goflow2
@@ -36,7 +36,7 @@ FPM_ARCH = x86_64
 endif
 
 .PHONY: proto
-# Generate Go protobuf bindings.
+# Generate Go protobuf bindings (requires protoc).
 proto:
 	@echo generating protobuf
 	protoc --go_opt=paths=source_relative --go_out=. pb/*.proto
@@ -81,7 +81,8 @@ clean:
 	rm -rf $(DIST_DIR)
 
 .PHONY: build
-# Build the goflow2 binary.
+# Build the goflow2 binary (bare `make` also runs this).
+.DEFAULT_GOAL := build
 build: prepare
 	CGO_ENABLED=0 go build -ldflags $(LDFLAGS) -o $(OUTPUT) cmd/goflow2/main.go
 
@@ -145,3 +146,57 @@ FPM_INPUTS := \
 define run_fpm
 	fpm -t $(1) $(FPM_COMMON_FLAGS) $(FPM_INPUTS)
 endef
+
+# ─────────────────────────────────────────────
+# Deploy package: tar.gz containing binaries + scripts + conf
+# ─────────────────────────────────────────────
+RELEASE_DIR ?= dist
+DEPLOY_ARCH  ?= all
+
+.PHONY: package-deploy
+package-deploy:
+	@$(MAKE) deploy-package ARCH=$(DEPLOY_ARCH)
+
+.PHONY: deploy-package
+deploy-package:
+	@echo "=== GoFlow2 deploy package build ==="
+	@echo "version : $(TAG)"
+	@echo "date    : $(DATE)"
+	@echo "arch    : $(DEPLOY_ARCH)"
+	@mkdir -p $(RELEASE_DIR)/bin $(RELEASE_DIR)/conf
+	@case "$(DEPLOY_ARCH)" in \
+		amd64|x86_64)  $(MAKE) deploy-arch GOARCH=amd64 OUT_BIN=goflow2-linux-amd64 ENRICH_BIN=enricher-goflow2-linux-amd64 ;; \
+		arm64|aarch64) $(MAKE) deploy-arch GOARCH=arm64 OUT_BIN=goflow2-linux-arm64 ENRICH_BIN=enricher-goflow2-linux-arm64 ;; \
+		all) \
+			$(MAKE) deploy-arch GOARCH=amd64 OUT_BIN=goflow2-linux-amd64 ENRICH_BIN=enricher-goflow2-linux-amd64 ; \
+			$(MAKE) deploy-arch GOARCH=arm64 OUT_BIN=goflow2-linux-arm64 ENRICH_BIN=enricher-goflow2-linux-arm64 ; \
+			;; \
+		*) echo "unknown arch: $(DEPLOY_ARCH) (use amd64|arm64|all)"; exit 1 ;; \
+	esac
+	@cp .deploy/conf/* $(RELEASE_DIR)/conf/
+	@PKG_DIR="goflow2-deploy-$(TAG)-$(shell date +%Y%m%d-%H%M%S)"; \
+	 mkdir -p $(RELEASE_DIR)/"$$PKG_DIR"; \
+	 cp -r $(RELEASE_DIR)/bin $(RELEASE_DIR)/"$$PKG_DIR"/; \
+	 cp -r $(RELEASE_DIR)/conf $(RELEASE_DIR)/"$$PKG_DIR"/; \
+	 cp .deploy/run.sh .deploy/setenv.sh $(RELEASE_DIR)/"$$PKG_DIR"/ 2>/dev/null || true; \
+	 cp .deploy/README.md $(RELEASE_DIR)/"$$PKG_DIR"/README.md 2>/dev/null || true; \
+	 (cd $(RELEASE_DIR) && tar czf "$$PKG_DIR.tar.gz" "$$PKG_DIR"); \
+	 echo ">>> done  $(RELEASE_DIR)/$$PKG_DIR.tar.gz"
+	@ls -lh $(RELEASE_DIR)/goflow2-deploy-*-*.tar.gz
+
+.PHONY: deploy-arch
+deploy-arch:
+	@echo ">>> building $(OUT_BIN) ..."
+	@GOOS=linux GOARCH=$(GOARCH) CGO_ENABLED=0 go build \
+		-ldflags $(LDFLAGS) \
+		-o $(RELEASE_DIR)/bin/$(OUT_BIN) \
+		./cmd/goflow2/main.go
+	@GOOS=linux GOARCH=$(GOARCH) CGO_ENABLED=0 go build \
+		-ldflags $(LDFLAGS) \
+		-o $(RELEASE_DIR)/bin/$(ENRICH_BIN) \
+		./cmd/enricher/main.go
+	@echo ">>> done $(OUT_BIN)"
+
+.PHONY: deploy-clean
+deploy-clean:
+	rm -rf $(RELEASE_DIR)

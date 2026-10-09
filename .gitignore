@@ -1,2 +1,5 @@
 dist/*
 .codegraph/
+.workbuddy/
+.vscode/
+.opencode/
