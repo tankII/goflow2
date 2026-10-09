@@ -34,7 +34,7 @@ func TestFormatRow(t *testing.T) {
 	key, out, err := d.Format(&testRow{values: []string{"1.2.3.4", "443", "a|b", "c\"d"}})
 	assert.Nil(t, err)
 	assert.Equal(t, []byte("k"), key)
-	assert.Equal(t, "1.2.3.4|443|\"a|b\"|\"c\"\"d\"\n", string(out))
+	assert.Equal(t, "1.2.3.4|443|\"a|b\"|\"c\"\"d\"", string(out))
 
 	_, _, err = d.Format("not a row")
 	if assert.NotNil(t, err) {

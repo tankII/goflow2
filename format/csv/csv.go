@@ -49,7 +49,8 @@ func csvEscape(v string, delim string) string {
 	return "\"" + strings.ReplaceAll(v, "\"", "\"\"") + "\""
 }
 
-// Format marshals the payload into a single CSV row.
+// Format marshals the payload into a single CSV row. The row carries no
+// trailing newline: transports own record separation via their separator flag.
 func (d *CSVDriver) Format(data interface{}) ([]byte, []byte, error) {
 	var key []byte
 	if dataIf, ok := data.(interface{ Key() []byte }); ok {
@@ -67,7 +68,7 @@ func (d *CSVDriver) Format(data interface{}) ([]byte, []byte, error) {
 		row[i] = csvEscape(v, d.delimiter)
 	}
 
-	return key, []byte(strings.Join(row, d.delimiter) + "\n"), nil
+	return key, []byte(strings.Join(row, d.delimiter)), nil
 }
 
 func init() {
