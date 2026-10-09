@@ -1,0 +1,112 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "NetFlow v9 / IPFIX 模板缓存实现机制",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "template-write",
+        "label": "模板集写入缓存",
+        "focus": ["rx", "ver", "fsloop", "fsbranch", "add", "persist"],
+        "note": "模板集如何被解码并写入模板缓存。"
+      },
+      {
+        "id": "data-decode",
+        "label": "数据解码与导出",
+        "focus": ["fsbranch", "get", "datafs", "produce", "send"],
+        "note": "数据集按缓存的模板解码并输出。"
+      },
+      {
+        "id": "cache-lifecycle",
+        "label": "TTL 与持久化",
+        "focus": ["add", "get", "sweep", "drop", "persist"],
+        "note": "模板缓存的过期清扫与 JSON 持久化。"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "rx", "label": "报文接收" },
+    { "id": "dec", "label": "NetFlow/IPFIX 解码器" },
+    { "id": "store", "label": "模板缓存 (flowstore)" },
+    { "id": "out", "label": "生产与输出" }
+  ],
+  "phases": [
+    { "id": "p1", "label": "接收 → 版本分发", "fromCol": 0, "toCol": 1 },
+    { "id": "p2", "label": "FlowSet 解码 · 模板缓存", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "p3", "label": "缓存维护 · 数据导出", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "g_tmpl", "label": "模板缓存（写入 / 查询）", "lane": "store", "fromCol": 2, "toCol": 3, "variant": "dashed" },
+    { "id": "g_data", "label": "数据解码路径", "lane": "dec", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "g_life", "label": "缓存生命周期（TTL · 持久化）", "lane": "store", "fromCol": 4, "toCol": 5, "variant": "security" },
+    { "id": "g_out", "label": "生产与输出", "lane": "out", "fromCol": 4, "toCol": 5, "variant": "default" }
+  ],
+  "mainPath": ["rx", "ver", "fsloop", "fsbranch", "get", "datafs", "produce", "send"],
+  "semanticChecks": {
+    "allowedRoots": ["rx", "sweep"],
+    "allowedTerminals": ["send", "persist", "drop", "add"],
+    "requiredPaths": [{ "from": "rx", "to": "send" }],
+    "requiredEdges": [
+      { "from": "fsbranch", "to": "get" },
+      { "from": "get", "to": "datafs" },
+      { "from": "datafs", "to": "produce" }
+    ]
+  },
+  "nodes": [
+    { "id": "rx", "lane": "rx", "col": 0, "type": "backend", "label": "Collector 接收端", "sublabel": "UDP 报文进入 DecodeFlow", "width": 148 },
+    { "id": "ver", "lane": "dec", "col": 1, "type": "backend", "label": "版本分发", "sublabel": "v9/v10 分派解码", "width": 148 },
+    { "id": "fsloop", "lane": "dec", "col": 2, "type": "backend", "label": "DecodeMessageCommon", "sublabel": "遍历 FlowSet", "width": 148 },
+    { "id": "fsbranch", "lane": "dec", "col": 2, "type": "security", "label": "FlowSet 类型判断", "sublabel": "模板集 / 数据集", "width": 148, "yOffset": 96 },
+    { "id": "add", "lane": "store", "col": 2, "type": "database", "label": "AddTemplate", "sublabel": "新 → Added · 覆写 → Updated", "width": 148 },
+    { "id": "get", "lane": "store", "col": 3, "type": "database", "label": "GetTemplate", "sublabel": "未命中 → TemplateNotFound", "width": 148 },
+    { "id": "datafs", "lane": "dec", "col": 3, "type": "backend", "label": "按模板字段解码", "sublabel": "DecodeDataSet", "width": 148 },
+    { "id": "drop", "lane": "store", "col": 3, "type": "security", "label": "ErrorTemplateNotFound", "sublabel": "告警（限频静默）", "width": 148, "yOffset": 96 },
+    { "id": "sweep", "lane": "store", "col": 5, "type": "database", "label": "TTL 过期清扫", "sublabel": "后台协程 · 默认 1m", "width": 148, "yOffset": 96 },
+    { "id": "persist", "lane": "store", "col": 5, "type": "database", "label": "持久化 & 观测", "sublabel": "JSON 快照 · 预加载 · /store", "width": 148 },
+    { "id": "produce", "lane": "out", "col": 4, "type": "backend", "label": "Producer.Produce", "sublabel": "DataSet → FlowMessage", "width": 148 },
+    { "id": "send", "lane": "out", "col": 5, "type": "messagebus", "label": "格式化 + 传输", "sublabel": "csv / netcat / kafka", "width": 148 }
+  ],
+  "edges": [
+    { "id": "e_rxver", "from": "rx", "to": "ver", "label": "读取 Version", "variant": "default" },
+    { "id": "e_verfs", "from": "ver", "to": "fsloop", "label": "统一解码入口", "variant": "default" },
+    { "id": "e_loopfs", "from": "fsloop", "to": "fsbranch", "label": "解析 FlowSet 头", "variant": "default" },
+    { "id": "e_fsadd", "from": "fsbranch", "to": "add", "label": "模板集 (v9:0/1 · v10:2/3)", "variant": "dashed", "role": "branch" },
+    { "id": "e_fsget", "from": "fsbranch", "to": "get", "label": "数据集 (ID≥256)", "variant": "default", "role": "main" },
+    { "id": "e_getfs", "from": "get", "to": "datafs", "label": "命中 → 返回 Fields", "variant": "default", "role": "main" },
+    { "id": "e_getdrop", "from": "get", "to": "drop", "label": "ErrorTemplateNotFound", "variant": "security", "role": "error" },
+    { "id": "e_sweeppersist", "from": "sweep", "to": "persist", "label": "OnRemove 过期淘汰", "variant": "dashed", "role": "async" },
+    { "id": "e_fsproduce", "from": "datafs", "to": "produce", "label": "DataSet 记录", "variant": "default", "role": "main" },
+    { "id": "e_producesend", "from": "produce", "to": "send", "label": "输出行", "variant": "default", "role": "main" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "模板缓存键",
+      "items": [
+        "四元组：router IP / version / obs-domain-id / template-id",
+        "内部打包 (version<<48)|(obs<<16)|tid",
+        "同 key 重复收到 → TemplateUpdated（覆写）"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "TTL 与过期清扫",
+      "items": [
+        "默认 -templates.ttl=0 不失效",
+        "-templates.sweep-interval 默认 1m 周期清扫",
+        "-templates.ttl.extend-on-access 读取时续期（默认关）"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "持久化与观测",
+      "items": [
+        "-store.json.path 启动时预加载模板",
+        "变更（增/删）→ 去抖落盘（-store.json.interval 默认 10s）",
+        "原子写 tmp+rename；HTTP /store 可查全部模板"
+      ]
+    }
+  ]
+}

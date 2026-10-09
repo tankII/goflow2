@@ -1,0 +1,549 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "GoFlow2 架构：NetFlow / IPFIX / sFlow 采集管线",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "main-path",
+        "label": "主采集路径",
+        "focus": [
+          "rx",
+          "udp",
+          "ver",
+          "nf9",
+          "tmpl-get",
+          "producer",
+          "fmt",
+          "trn",
+          "sink"
+        ],
+        "note": "报文从接收、解码到输出的完整主链路。"
+      },
+      {
+        "id": "template-cache",
+        "label": "模板缓存与生命周期",
+        "focus": [
+          "nf9",
+          "ipfix",
+          "tmpl-add",
+          "tmpl-get",
+          "drop",
+          "sweep",
+          "persist"
+        ],
+        "note": "模板集的写入、查询、TTL 清扫与持久化机制。"
+      },
+      {
+        "id": "wiring",
+        "label": "装配与配置",
+        "focus": [
+          "udp",
+          "producer",
+          "trn",
+          "setenv",
+          "app"
+        ],
+        "note": "运行时装配：环境变量、管道、生产者与传输层。"
+      },
+      {
+        "id": "observability",
+        "label": "可观测性",
+        "focus": [
+          "tmpl-get",
+          "metrics",
+          "http",
+          "ops"
+        ],
+        "note": "Prometheus 指标与 HTTP /store 端点。"
+      }
+    ]
+  },
+  "lanes": [
+    {
+      "id": "rx",
+      "label": "报文接收"
+    },
+    {
+      "id": "dec",
+      "label": "协议解码"
+    },
+    {
+      "id": "tmpl",
+      "label": "模板缓存（flowstore）"
+    },
+    {
+      "id": "prod",
+      "label": "生产与格式化"
+    },
+    {
+      "id": "out",
+      "label": "传输与输出"
+    },
+    {
+      "id": "ops",
+      "label": "配置与观测"
+    }
+  ],
+  "phases": [
+    {
+      "id": "p1",
+      "label": "接收 → 版本分发",
+      "fromCol": 0,
+      "toCol": 0
+    },
+    {
+      "id": "p2",
+      "label": "协议解码 · 模板缓存",
+      "fromCol": 1,
+      "toCol": 1
+    },
+    {
+      "id": "p3",
+      "label": "生产 → 格式化 → 传输",
+      "fromCol": 2,
+      "toCol": 3
+    },
+    {
+      "id": "p4",
+      "label": "配置与可观测",
+      "fromCol": 4,
+      "toCol": 4,
+      "variant": "security"
+    }
+  ],
+  "groups": [
+    {
+      "id": "g_dec",
+      "label": "协议解码（NetFlow v9 · IPFIX · sFlow）",
+      "lane": "dec",
+      "fromCol": 1,
+      "toCol": 1,
+      "variant": "emphasis"
+    },
+    {
+      "id": "g_tmpl",
+      "label": "模板缓存生命周期",
+      "lane": "tmpl",
+      "fromCol": 1,
+      "toCol": 2,
+      "variant": "dashed"
+    },
+    {
+      "id": "g_ops",
+      "label": "运行时配置与可观测",
+      "lane": "ops",
+      "fromCol": 3,
+      "toCol": 4,
+      "variant": "security"
+    }
+  ],
+  "mainPath": [
+    "rx",
+    "udp",
+    "ver",
+    "nf9",
+    "tmpl-get",
+    "producer",
+    "fmt",
+    "trn",
+    "sink"
+  ],
+  "semanticChecks": {
+    "allowedRoots": [
+      "rx",
+      "setenv",
+      "sweep",
+      "http",
+      "tmpl-add",
+      "app"
+    ],
+    "allowedTerminals": [
+      "sink",
+      "metrics",
+      "ops",
+      "drop",
+      "persist",
+      "ipfix",
+      "setenv"
+    ],
+    "requiredPaths": [
+      {
+        "from": "rx",
+        "to": "sink"
+      }
+    ],
+    "requiredEdges": [
+      {
+        "from": "udp",
+        "to": "ver"
+      },
+      {
+        "from": "ver",
+        "to": "nf9"
+      },
+      {
+        "from": "nf9",
+        "to": "tmpl-get"
+      },
+      {
+        "from": "tmpl-get",
+        "to": "producer"
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "rx",
+      "lane": "rx",
+      "col": 0,
+      "type": "backend",
+      "label": "网络设备",
+      "sublabel": "路由器/交换机 SNMP 采样导出",
+      "width": 128
+    },
+    {
+      "id": "udp",
+      "lane": "rx",
+      "col": 1,
+      "type": "backend",
+      "label": "UDP Receiver",
+      "sublabel": "count × workers 收包",
+      "width": 128
+    },
+    {
+      "id": "ver",
+      "lane": "dec",
+      "col": 1,
+      "type": "backend",
+      "label": "版本分发",
+      "sublabel": "sflow:// · netflow:// 分流",
+      "width": 160
+    },
+    {
+      "id": "nf9",
+      "lane": "dec",
+      "col": 2,
+      "type": "backend",
+      "label": "NetFlow v9",
+      "sublabel": "v9 FlowSet 解码",
+      "width": 128
+    },
+    {
+      "id": "ipfix",
+      "lane": "dec",
+      "col": 2,
+      "type": "backend",
+      "label": "IPFIX",
+      "sublabel": "v10 扩展字段解码",
+      "width": 128,
+      "yOffset": 192
+    },
+    {
+      "id": "tmpl-add",
+      "lane": "tmpl",
+      "col": 1,
+      "type": "database",
+      "label": "AddTemplate",
+      "sublabel": "模板集 → Added/Updated",
+      "width": 128
+    },
+    {
+      "id": "tmpl-get",
+      "lane": "tmpl",
+      "col": 2,
+      "type": "database",
+      "label": "GetTemplate",
+      "sublabel": "数据集 → 按 ID 查询",
+      "width": 128
+    },
+    {
+      "id": "drop",
+      "lane": "tmpl",
+      "col": 2,
+      "type": "security",
+      "label": "TemplateNotFound",
+      "sublabel": "限频静默告警",
+      "width": 128,
+      "yOffset": 96
+    },
+    {
+      "id": "sweep",
+      "lane": "tmpl",
+      "col": 3,
+      "type": "database",
+      "label": "TTL 清扫",
+      "sublabel": "后台协程·默认永不过期",
+      "width": 128,
+      "yOffset": 96
+    },
+    {
+      "id": "persist",
+      "lane": "tmpl",
+      "col": 3,
+      "type": "database",
+      "label": "JSON 持久化",
+      "sublabel": "去抖落盘·启动预加载",
+      "width": 128,
+      "yOffset": 192
+    },
+    {
+      "id": "producer",
+      "lane": "prod",
+      "col": 3,
+      "type": "backend",
+      "label": "Producer",
+      "sublabel": "ProtoProducer/RawProducer",
+      "width": 128
+    },
+    {
+      "id": "fmt",
+      "lane": "prod",
+      "col": 4,
+      "type": "backend",
+      "label": "Formatter",
+      "sublabel": "json·csv·text·binary",
+      "width": 128,
+      "yOffset": 96
+    },
+    {
+      "id": "trn",
+      "lane": "out",
+      "col": 4,
+      "type": "messagebus",
+      "label": "Transport",
+      "sublabel": "file·netcat·kafka(TLS+SASL)",
+      "width": 140,
+      "yOffset": 96
+    },
+    {
+      "id": "sink",
+      "lane": "out",
+      "col": 5,
+      "type": "messagebus",
+      "label": "下游系统",
+      "sublabel": "日志文件/TCP/Kafka Broker",
+      "width": 140
+    },
+    {
+      "id": "setenv",
+      "lane": "ops",
+      "col": 3,
+      "type": "backend",
+      "label": "setenv.sh",
+      "sublabel": "GOFLOW2_* 环境变量预配置",
+      "width": 128,
+      "yOffset": 192
+    },
+    {
+      "id": "app",
+      "lane": "ops",
+      "col": 4,
+      "type": "backend",
+      "label": "App 装配",
+      "sublabel": "collector·builder·config",
+      "width": 140,
+      "yOffset": 96
+    },
+    {
+      "id": "metrics",
+      "lane": "ops",
+      "col": 5,
+      "type": "cloud",
+      "label": "Prometheus",
+      "sublabel": "TemplateStoreHooks 指标",
+      "width": 128,
+      "yOffset": 96
+    },
+    {
+      "id": "http",
+      "lane": "ops",
+      "col": 4,
+      "type": "cloud",
+      "label": "HTTP /store",
+      "sublabel": "在线查看模板缓存状态",
+      "width": 128,
+      "yOffset": 288
+    },
+    {
+      "id": "ops",
+      "lane": "ops",
+      "col": 5,
+      "type": "external",
+      "label": "运维观测",
+      "sublabel": "指标告警·模板查询",
+      "width": 128,
+      "yOffset": 192
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_rxudp",
+      "from": "rx",
+      "to": "udp",
+      "label": "UDP 报文",
+      "variant": "default",
+      "role": "main"
+    },
+    {
+      "id": "e_udver",
+      "from": "udp",
+      "to": "ver",
+      "label": "分发",
+      "variant": "default",
+      "role": "main"
+    },
+    {
+      "id": "e_vernf9",
+      "from": "ver",
+      "to": "nf9",
+      "label": "v9",
+      "variant": "default",
+      "role": "main"
+    },
+    {
+      "id": "e_veripfx",
+      "from": "ver",
+      "to": "ipfix",
+      "label": "v10",
+      "variant": "default",
+      "role": "branch"
+    },
+    {
+      "id": "e_nf9get",
+      "from": "nf9",
+      "to": "tmpl-get",
+      "label": "数据集",
+      "variant": "default",
+      "role": "main"
+    },
+    {
+      "id": "e_getprd",
+      "from": "tmpl-get",
+      "to": "producer",
+      "label": "命中→Fields",
+      "variant": "default",
+      "role": "main"
+    },
+    {
+      "id": "e_getdrp",
+      "from": "tmpl-get",
+      "to": "drop",
+      "label": "未命中告警",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e_addprst",
+      "from": "tmpl-add",
+      "to": "persist",
+      "label": "OnAdd 通知",
+      "variant": "dashed",
+      "role": "async"
+    },
+    {
+      "id": "e_swprst",
+      "from": "sweep",
+      "to": "persist",
+      "label": "OnRemove 淘汰",
+      "variant": "dashed",
+      "role": "async"
+    },
+    {
+      "id": "e_prdfmt",
+      "from": "producer",
+      "to": "fmt",
+      "label": "FlowMessage",
+      "variant": "default",
+      "role": "main"
+    },
+    {
+      "id": "e_fmttrn",
+      "from": "fmt",
+      "to": "trn",
+      "label": "字节流",
+      "variant": "default",
+      "role": "main"
+    },
+    {
+      "id": "e_trnsnk",
+      "from": "trn",
+      "to": "sink",
+      "label": "输出",
+      "variant": "default",
+      "role": "main"
+    },
+    {
+      "id": "e_tmplmet",
+      "from": "tmpl-get",
+      "to": "metrics",
+      "label": "OnAccess 指标",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "e_metops",
+      "from": "metrics",
+      "to": "ops",
+      "label": "告警/看板",
+      "variant": "default",
+      "role": "branch"
+    },
+    {
+      "id": "e_httpops",
+      "from": "http",
+      "to": "ops",
+      "label": "模板查询",
+      "variant": "default",
+      "role": "branch"
+    },
+    {
+      "id": "e_appsetenv",
+      "from": "app",
+      "to": "setenv",
+      "label": "读取配置",
+      "variant": "dashed",
+      "role": "branch"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "模板缓存键",
+      "items": [
+        "四元组：router IP / version / obs-domain-id / template-id",
+        "内部打包 (version<<48)|(obs<<16)|tid",
+        "同 key 重复收到 → TemplateUpdated（覆写）"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "TTL 与过期清扫",
+      "items": [
+        "默认 -templates.ttl=0 永不过期",
+        "-templates.sweep-interval 默认 1m 周期清扫",
+        "-templates.ttl.extend-on-access 读取时续期（默认关）"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "持久化与观测",
+      "items": [
+        "-store.json.path 启动时预加载模板",
+        "变更（增/删）→ 去抖落盘（间隔默认 10s）",
+        "HTTP /store 可查全部路由器模板缓存状态"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Kafka 传输（可选）",
+      "items": [
+        "GOFLOW2_TRANSPORT=kafka 启用 Kafka 输出",
+        "支持 TLS + SASL/GSSAPI Kerberos 认证",
+        "broker/topic/keytab/realm 均可在 setenv.sh 中预配置"
+      ]
+    }
+  ]
+}
