@@ -44,8 +44,7 @@ var (
 	DbAsn     = flag.String("db.asn", "", "IP->ASN database")
 	DbCountry = flag.String("db.country", "", "IP->Country database")
 
-	LogLevel string
-	LogFmt   string
+	LogOpts logging.Options
 
 	SamplingRate = flag.Int("samplingrate", 0, "Set sampling rate (values > 0)")
 
@@ -101,7 +100,8 @@ func (m *ProtoProducerMessage) MarshalBinary() ([]byte, error) {
 }
 
 func main() {
-	config.BindCommonFlags(flag.CommandLine, &LogLevel, &LogFmt, &Format, &Transport)
+	logging.RegisterFlags(flag.CommandLine, &LogOpts)
+	config.BindCommonFlags(flag.CommandLine, &Format, &Transport)
 	flag.Parse()
 
 	if *Version {
@@ -109,7 +109,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	logger, err := logging.NewLogger(logging.Options{Level: LogLevel, Format: LogFmt})
+	logger, err := logging.NewLogger(LogOpts)
 	if err != nil {
 		log.Fatal("error parsing log level")
 	}

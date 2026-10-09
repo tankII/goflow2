@@ -38,11 +38,29 @@ type App struct {
 
 // New constructs a new App from config.
 func New(cfg *config.Config) (*App, error) {
-	logger, err := logging.NewLogger(logging.Options{Level: cfg.LogLevel, Format: cfg.LogFmt})
+	logger, err := logging.NewLogger(cfg.Logging)
 	if err != nil {
 		return nil, fmt.Errorf("app: init logger: %w", err)
 	}
 	slog.SetDefault(logger)
+
+	slog.Info("goflow2 startup",
+		"log_level", cfg.Logging.Level,
+		"log_format", cfg.Logging.Format,
+		"log_file", cfg.Logging.File,
+		"listen", cfg.ListenAddresses,
+		"http_addr", cfg.Addr,
+		"format", cfg.Format,
+		"transport", cfg.Transport,
+		"produce", cfg.Produce,
+		"device_stats_path", cfg.DeviceStatsPath,
+		"device_retention_hourly", cfg.DeviceHourlyTTL.String(),
+		"device_retention_daily", cfg.DeviceDailyTTL.String(),
+		"templates_ttl", cfg.TemplatesTTL.String(),
+		"sampling_ttl", cfg.SamplingRatesTTL.String(),
+		"store_json_path", cfg.StoreJSONPath,
+		"store_json_interval", cfg.StoreJSONInterval.String(),
+		"mapping", cfg.MappingFile)
 
 	formatter, err := builder.BuildFormatter(cfg.Format)
 	if err != nil {
