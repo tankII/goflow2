@@ -13,7 +13,7 @@ import (
 )
 
 // PromDecoderWrapper wraps a decoder to emit Prometheus metrics.
-func PromDecoderWrapper(wrapped utils.DecoderFunc, name string) utils.DecoderFunc {
+func PromDecoderWrapper(wrapped utils.DecoderFunc, name string, rc *RouterCounter) utils.DecoderFunc {
 	return func(msg interface{}) error {
 		pkt, ok := msg.(*utils.Message)
 		if !ok {
@@ -24,6 +24,10 @@ func PromDecoderWrapper(wrapped utils.DecoderFunc, name string) utils.DecoderFun
 
 		port := strconv.FormatUint(uint64(pkt.Dst.Port()), 10)
 		size := len(pkt.Payload)
+
+		if rc != nil {
+			rc.IncPacket(remote, int64(size))
+		}
 
 		MetricTrafficBytes.With(
 			prometheus.Labels{

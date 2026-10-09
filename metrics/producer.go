@@ -15,7 +15,8 @@ import (
 
 // PromProducerWrapper wraps a producer to emit Prometheus metrics.
 type PromProducerWrapper struct {
-	wrapped producer.ProducerInterface
+	wrapped       producer.ProducerInterface
+	routerCounter *RouterCounter
 }
 
 // Produce forwards to the wrapped producer and updates metrics.
@@ -25,6 +26,9 @@ func (p *PromProducerWrapper) Produce(msg interface{}, args *producer.ProduceArg
 		return flowMessageSet, fmt.Errorf("metrics producer: %w", err)
 	}
 	key := args.Src.Addr().Unmap().String()
+	if p.routerCounter != nil {
+		p.routerCounter.IncFlow(key, int64(len(flowMessageSet)))
+	}
 	var nfvariant bool
 	var versionStr string
 	switch packet := msg.(type) {
@@ -148,9 +152,10 @@ func (p *PromProducerWrapper) Commit(flowMessageSet []producer.ProducerMessage) 
 }
 
 // WrapPromProducer wraps a producer with metrics reporting.
-func WrapPromProducer(wrapped producer.ProducerInterface) producer.ProducerInterface {
+func WrapPromProducer(wrapped producer.ProducerInterface, rc *RouterCounter) producer.ProducerInterface {
 	return &PromProducerWrapper{
-		wrapped: wrapped,
+		wrapped:       wrapped,
+		routerCounter: rc,
 	}
 }
 

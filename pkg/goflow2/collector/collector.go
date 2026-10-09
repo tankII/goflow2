@@ -26,6 +26,7 @@ type Config struct {
 	Transport     *transport.Transport
 	Producer      producer.ProducerInterface
 	TemplateStore netflow.ManagedTemplateStore
+	RouterCounter *metrics.RouterCounter
 	ErrCnt        int
 	ErrInt        time.Duration
 	Logger        *slog.Logger
@@ -40,6 +41,8 @@ type Collector struct {
 	errCnt    int
 	errInt    time.Duration
 	logger    *slog.Logger
+
+	routerCounter *metrics.RouterCounter
 
 	receivers       []*utils.UDPReceiver
 	pipes           []utils.FlowPipe
@@ -63,6 +66,7 @@ func New(cfg Config) (*Collector, error) {
 		errInt:        cfg.ErrInt,
 		logger:        cfg.Logger,
 		templateStore: cfg.TemplateStore,
+		routerCounter: cfg.RouterCounter,
 	}, nil
 }
 
@@ -144,7 +148,7 @@ func (c *Collector) Start() error {
 
 		decodeFunc := p.DecodeFlow
 		decodeFunc = debug.PanicDecoderWrapper(decodeFunc)
-		decodeFunc = metrics.PromDecoderWrapper(decodeFunc, listenCfg.Scheme)
+		decodeFunc = metrics.PromDecoderWrapper(decodeFunc, listenCfg.Scheme, c.routerCounter)
 		c.pipes = append(c.pipes, p)
 
 		bm := utils.NewBatchMute(c.errInt, c.errCnt)
