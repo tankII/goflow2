@@ -73,6 +73,7 @@ type FormatterMapper interface {
 	Rename(name string) (string, bool)
 	Remap(name string) (string, bool)
 	Render(name string) (RenderFunc, bool)
+	Literal(name string) (string, bool)
 	NumToProtobuf(num int32) (ProtobufFormatterConfig, bool)
 	IsArray(name string) bool
 }

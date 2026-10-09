@@ -81,6 +81,7 @@ type FormatterConfig struct {
 	Key      []string                  `yaml:"key"`
 	Render   map[string]RendererID     `yaml:"render"`
 	Rename   map[string]string         `yaml:"rename"`
+	Literal  map[string]interface{}    `yaml:"literal"`
 	Protobuf []ProtobufFormatterConfig `yaml:"protobuf"`
 }
 
@@ -139,6 +140,7 @@ type FormatterConfigMapper struct {
 	pbMap   map[string]ProtobufFormatterConfig
 	numToPb map[int32]ProtobufFormatterConfig
 	isSlice map[string]bool
+	literal map[string]string // constant-valued columns
 }
 
 func (f *FormatterConfigMapper) Keys() []string {
@@ -161,6 +163,12 @@ func (f *FormatterConfigMapper) Remap(name string) (string, bool) {
 
 func (f *FormatterConfigMapper) Render(name string) (RenderFunc, bool) {
 	r, ok := f.render[name]
+	return r, ok
+}
+
+// Literal returns the constant value configured for a non-native column.
+func (f *FormatterConfigMapper) Literal(name string) (string, bool) {
+	r, ok := f.literal[name]
 	return r, ok
 }
 
@@ -407,6 +415,7 @@ func mapFormat(cfg *ProducerConfig) (*FormatterConfigMapper, error) {
 	pbMap := make(map[string]ProtobufFormatterConfig)
 	formatterMapped.render = make(map[string]RenderFunc)
 	formatterMapped.rename = make(map[string]string)
+	formatterMapped.literal = make(map[string]string)
 	formatterMapped.isSlice = isSliceMap
 	for k, v := range defaultRenderers {
 		formatterMapped.render[k] = v
@@ -426,6 +435,11 @@ func mapFormat(cfg *ProducerConfig) (*FormatterConfigMapper, error) {
 		// populate manual renames
 		for k, v := range cfgFormatter.Rename {
 			formatterMapped.rename[k] = v
+		}
+
+		// populate constant-valued columns (values normalized to strings)
+		for k, v := range cfgFormatter.Literal {
+			formatterMapped.literal[k] = fmt.Sprintf("%v", v)
 		}
 
 		// populate key
@@ -457,7 +471,10 @@ func mapFormat(cfg *ProducerConfig) (*FormatterConfigMapper, error) {
 
 					// check if it's a virtual field
 					if _, ok := formatterMapped.render[field]; !ok {
-						return formatterMapped, fmt.Errorf("field %s in config not found in protobuf", field) // todo: make proper error
+						// or a literal (constant) column
+						if _, ok := formatterMapped.literal[field]; !ok {
+							return formatterMapped, fmt.Errorf("field %s in config not found in protobuf", field) // todo: make proper error
+						}
 					}
 
 				}

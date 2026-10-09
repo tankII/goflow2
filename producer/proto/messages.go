@@ -218,6 +218,21 @@ func (m *ProtoProducerMessage) renderFieldParts() []*fieldPart {
 	for idx, s := range fields {
 		fieldName := s
 
+		// constant (non-native) columns take precedence: emit the configured
+		// value verbatim, honoring any rename for the display name.
+		if lit, ok := m.formatter.Literal(s); ok {
+			part := &fieldPart{
+				values: []valueRender{{val: lit, isStr: true}},
+			}
+			if fieldRename, ok := m.formatter.Rename(s); ok && fieldRename != "" {
+				part.finalName = fieldRename
+			} else {
+				part.finalName = s
+			}
+			parts[idx] = part
+			continue
+		}
+
 		// get original name from structure
 		if fieldNameMap, ok := m.formatter.Remap(fieldName); ok && fieldNameMap != "" {
 			fieldName = fieldNameMap

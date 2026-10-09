@@ -25,6 +25,9 @@ formatter:
     # additional fields
     - icmp_name # virtual column
     - csum # udp checksum
+    - flows
+  literal:
+    flows: 1
   key:
     - sampler_address
   protobuf: # manual protobuf fields addition
