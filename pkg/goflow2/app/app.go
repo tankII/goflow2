@@ -142,6 +142,7 @@ func New(cfg *config.Config) (*App, error) {
 			StoreHTTPPath:   cfg.StoreHTTPPath,
 			DeviceStatsPath: cfg.DeviceStatsPath,
 			RouterCounter:   deviceRC,
+			LogHTTP:         cfg.Logging.HTTP,
 		}, persist.Document, app.collecting.Load)
 		app.server = &http.Server{
 			Addr:              cfg.Addr,
