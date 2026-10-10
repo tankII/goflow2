@@ -1,22 +1,26 @@
 package httpserver
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/netsampler/goflow2/v3/metrics"
+	"github.com/netsampler/goflow2/v3/pkg/goflow2/collector"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Config configures the HTTP server.
 type Config struct {
-	Addr            string
-	StoreHTTPPath   string
-	DeviceStatsPath string
-	RouterCounter   *metrics.RouterCounter
-	LogHTTP         bool
+	Addr             string
+	StoreHTTPPath    string
+	DeviceStatsPath  string
+	QueueStatsPath   string
+	RouterCounter    *metrics.RouterCounter
+	QueueStatsSource func() []collector.QueueStat
+	LogHTTP          bool
 }
 
 // StoreSource returns flowstore data for HTTP rendering.
@@ -34,6 +38,29 @@ func HealthHandler(isCollecting func() bool) http.HandlerFunc {
 		}
 		wr.WriteHeader(http.StatusOK)
 		if _, err := wr.Write([]byte("OK\n")); err != nil {
+			slog.Error("error writing HTTP", slog.String("error", err.Error()))
+		}
+	}
+}
+
+// QueueStatsHandler returns a handler serving receiver queue usage as JSON.
+func QueueStatsHandler(source func() []collector.QueueStat) http.HandlerFunc {
+	return func(wr http.ResponseWriter, r *http.Request) {
+		stats := source()
+		if stats == nil {
+			stats = []collector.QueueStat{}
+		}
+		body, err := json.Marshal(stats)
+		if err != nil {
+			wr.WriteHeader(http.StatusInternalServerError)
+			if _, werr := wr.Write([]byte("Internal Server Error\n")); werr != nil {
+				slog.Error("error writing HTTP", slog.String("error", werr.Error()))
+			}
+			return
+		}
+		wr.Header().Add("Content-Type", "application/json")
+		wr.WriteHeader(http.StatusOK)
+		if _, err := wr.Write(body); err != nil {
 			slog.Error("error writing HTTP", slog.String("error", err.Error()))
 		}
 	}
@@ -124,6 +151,14 @@ func New(cfg Config, store StoreSource, isCollecting func() bool) http.Handler {
 		mux.HandleFunc(basePath+"hourly", metrics.DeviceHourlyHandler(cfg.RouterCounter))
 		mux.HandleFunc(basePath+"daily", metrics.DeviceDailyHandler(cfg.RouterCounter))
 		mux.HandleFunc("/device-list", metrics.DeviceListHandler(cfg.RouterCounter))
+	}
+
+	if cfg.QueueStatsSource != nil {
+		path := cfg.QueueStatsPath
+		if path == "" {
+			path = "/queue-stats"
+		}
+		mux.HandleFunc(path, QueueStatsHandler(cfg.QueueStatsSource))
 	}
 
 	if cfg.LogHTTP {

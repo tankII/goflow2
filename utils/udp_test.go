@@ -45,6 +45,31 @@ func TestUDPReceiver(t *testing.T) {
 	require.NoError(t, r.Stop())
 }
 
+func TestUDPReceiverQueueStats(t *testing.T) {
+	r, err := NewUDPReceiver(&UDPReceiverConfig{QueueSize: 3})
+	require.NoError(t, err)
+
+	depth, capacity := r.QueueStats()
+	require.Equal(t, 3, capacity)
+	require.Equal(t, 0, depth)
+
+	r.dispatch <- &udpPacket{}
+	r.dispatch <- &udpPacket{}
+
+	depth, capacity = r.QueueStats()
+	require.Equal(t, 2, depth)
+	require.Equal(t, 3, capacity)
+}
+
+func TestUDPReceiverQueueStatsSynchronous(t *testing.T) {
+	r, err := NewUDPReceiver(&UDPReceiverConfig{QueueSize: 0, Blocking: true})
+	require.NoError(t, err)
+
+	depth, capacity := r.QueueStats()
+	require.Equal(t, 0, capacity)
+	require.Equal(t, 0, depth)
+}
+
 func TestUDPClose(t *testing.T) {
 	addr := "::1"
 	port, err := getFreeUDPPort()

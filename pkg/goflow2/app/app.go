@@ -138,11 +138,13 @@ func New(cfg *config.Config) (*App, error) {
 
 	if cfg.Addr != "" {
 		mux := httpserver.New(httpserver.Config{
-			Addr:            cfg.Addr,
-			StoreHTTPPath:   cfg.StoreHTTPPath,
-			DeviceStatsPath: cfg.DeviceStatsPath,
-			RouterCounter:   deviceRC,
-			LogHTTP:         cfg.Logging.HTTP,
+			Addr:             cfg.Addr,
+			StoreHTTPPath:    cfg.StoreHTTPPath,
+			DeviceStatsPath:  cfg.DeviceStatsPath,
+			QueueStatsPath:   cfg.QueueStatsPath,
+			RouterCounter:    deviceRC,
+			QueueStatsSource: coll.QueueStats,
+			LogHTTP:          cfg.Logging.HTTP,
 		}, persist.Document, app.collecting.Load)
 		app.server = &http.Server{
 			Addr:              cfg.Addr,

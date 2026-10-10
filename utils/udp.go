@@ -148,6 +148,12 @@ func (r *UDPReceiver) Errors() <-chan error {
 	return r.errCh
 }
 
+// QueueStats returns the dispatch queue depth and capacity.
+// Capacity is 0 for synchronous (blocking) receivers, where depth is always 0.
+func (r *UDPReceiver) QueueStats() (depth int, capacity int) {
+	return len(r.dispatch), cap(r.dispatch)
+}
+
 func (r *UDPReceiver) receive(addr string, port int, started chan bool) error {
 	if strings.ContainsRune(addr, ':') && !strings.ContainsRune(addr, '[') {
 		addr = "[" + addr + "]"

@@ -81,10 +81,12 @@ func (d *FileDriver) Init() error {
 }
 
 // Send writes a formatted message and separator to the destination.
+// The data+separator pair is written under the write lock so that
+// concurrent Send calls do not interleave and merge lines.
 func (d *FileDriver) Send(key, data []byte) error {
-	d.lock.RLock()
+	d.lock.Lock()
+	defer d.lock.Unlock()
 	w := d.w
-	d.lock.RUnlock()
 	if len(data) > 0 {
 		if _, err := w.Write(data); err != nil {
 			return fmt.Errorf("write message: %w", err)

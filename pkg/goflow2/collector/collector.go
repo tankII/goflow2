@@ -45,11 +45,50 @@ type Collector struct {
 	routerCounter *metrics.RouterCounter
 
 	receivers       []*utils.UDPReceiver
+	queueReporters  []queueReporter
 	pipes           []utils.FlowPipe
 	netflowTemplate *utils.NetFlowPipe
 	templateStore   netflow.ManagedTemplateStore
 	stopCh          chan struct{}
 	wg              sync.WaitGroup
+}
+
+type queueReporter struct {
+	scheme   string
+	hostname string
+	port     int
+	recv     *utils.UDPReceiver
+}
+
+// QueueStat reports a receiver's dispatch queue usage.
+type QueueStat struct {
+	Scheme      string  `json:"scheme"`
+	Hostname    string  `json:"hostname"`
+	Port        int     `json:"port"`
+	Depth       int     `json:"depth"`
+	Capacity    int     `json:"capacity"`
+	Utilization float64 `json:"utilization"`
+}
+
+// QueueStats returns the dispatch queue usage for each listener.
+func (c *Collector) QueueStats() []QueueStat {
+	stats := make([]QueueStat, 0, len(c.queueReporters))
+	for _, rep := range c.queueReporters {
+		depth, capacity := rep.recv.QueueStats()
+		utilization := 0.0
+		if capacity > 0 {
+			utilization = float64(depth) / float64(capacity)
+		}
+		stats = append(stats, QueueStat{
+			Scheme:      rep.scheme,
+			Hostname:    rep.hostname,
+			Port:        rep.port,
+			Depth:       depth,
+			Capacity:    capacity,
+			Utilization: utilization,
+		})
+	}
+	return stats
 }
 
 // New creates a Collector from config.
@@ -186,6 +225,12 @@ func (c *Collector) Start() error {
 		}(source)
 
 		c.receivers = append(c.receivers, recv)
+		c.queueReporters = append(c.queueReporters, queueReporter{
+			scheme:   listenCfg.Scheme,
+			hostname: listenCfg.Hostname,
+			port:     listenCfg.Port,
+			recv:     recv,
+		})
 	}
 
 	if recvErrCh != nil {
