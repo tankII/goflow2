@@ -184,6 +184,9 @@ _build_device_stats_args() {
     if [[ -n "${GOFLOW2_DEVICE_RETENTION_DAILY:-}" ]]; then
         args="${args} -device.retention.daily ${GOFLOW2_DEVICE_RETENTION_DAILY}"
     fi
+    if [[ -n "${GOFLOW2_QUEUE_STATS_PATH:-}" ]]; then
+        args="${args} -queue.stats.path ${GOFLOW2_QUEUE_STATS_PATH}"
+    fi
     echo "$args"
 }
 
@@ -383,7 +386,8 @@ usage() {
     echo "  GOFLOW2_PID_FILE   pid 文件路径"
     echo "  GOFLOW2_DEVICE_STATS_PATH       设备统计端点前缀 (default /device-stats)"
     echo "  GOFLOW2_DEVICE_RETENTION_HOURLY 小时桶保留时长 (default 72h)"
-    echo "  GOFLOW2_DEVICE_RETENTION_DAILY  日桶保留时长 (default 2160h=90天)"
+    echo "  GOFLOW2_DEVICE_RETENTION_DAILY  日桶保留时长 (default 2160h=90天)
+  GOFLOW2_QUEUE_STATS_PATH        队列监控端点路径 (default /queue-stats)"
     echo "  GOFLOW2_LOG_PATH      额外日志文件（-log.file，带大小轮转）"
     echo "  GOFLOW2_LOG_ALSO_STDERR 设了 LOG_PATH 时同时输出 stderr (1/true)"
     echo "  GOFLOW2_LOG_SOURCE    日志附 source (1/true)"

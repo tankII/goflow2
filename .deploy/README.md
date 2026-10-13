@@ -102,6 +102,9 @@ curl http://127.0.0.1:18080/device-list
 # 按小时 / 按日聚合（最近 1 小时桶 / 当日桶；无数据时返回 404）
 curl "http://127.0.0.1:18080/device-stats/hourly?router=127.0.0.1"
 curl "http://127.0.0.1:18080/device-stats/daily?router=127.0.0.1"
+
+# 接收队列使用情况（JSON，默认 /queue-stats，可配 -queue.stats.path）
+curl "http://127.0.0.1:18080/queue-stats"
 ```
 
 在 Prometheus 侧可抓取 `/metrics`，其中 `goflow2_device_*` 系列（`device_active_count`、`device_last_seen_timestamp_seconds{router}`、`device_packets_total{router}`、`device_flows_total{router}`）实时反映设备活跃度。

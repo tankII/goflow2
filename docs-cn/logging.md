@@ -90,3 +90,6 @@ msg="http request" method=GET path=/device-list query="" remote=127.0.0.1:xxxxx 
 - 单一入口：`logging.NewLogger(Options)` 决定 writer（stderr / lumberjack / MultiWriter）与 `HandlerOptions`；
 - `logging.RegisterFlags(fs, *Options)` 统一注册全部 `-log.*` flags，goflow2 与 enricher 共用，杜绝参数不一致；
 - HTTP 访问日志不引入额外依赖，复用既有 slog。
+## HTTP 队列监控端点
+
+- `GET /queue-stats`：查看各监听器接收队列深度/容量/使用率（默认 `/queue-stats`，可配 `-queue.stats.path`）

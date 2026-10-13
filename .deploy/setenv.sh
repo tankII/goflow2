@@ -129,3 +129,5 @@
 
 # 跳过 TLS 证书验证（仅测试环境使用）
 # [[ -z "${GOFLOW2_KAFKA_TLS_INSECURE:-}" ]] && export GOFLOW2_KAFKA_TLS_INSECURE=1
+# 队列监控端点路径（默认 /queue-stats）
+# [[ -z "${GOFLOW2_QUEUE_STATS_PATH:-}" ]] && export GOFLOW2_QUEUE_STATS_PATH=/queue-stats
