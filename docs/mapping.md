@@ -85,6 +85,21 @@ formatter:
     my_other_field: ip
 ```
 
+The `datetime` and `datetimenano` renderers accept an optional `:<layout>` suffix to
+format timestamps with a custom [Go reference-time layout](https://pkg.go.dev/time#pkg-constants)
+(`.000` = milliseconds, `.000000` = microseconds, `.000000000` = nanoseconds):
+
+```yaml
+formatter:
+  render:
+    time_received_ns: "datetimenano:2006-01-02 15:04:05.000"   # 2026-10-06 21:42:04.746
+    time_flow_start:  "datetime:2006-01-02 15:04:05"           # seconds source
+```
+
+Values contain `:` and spaces, so quote them in YAML. Timestamps are rendered in
+UTC by default; set the `TZ` environment variable (eg. `TZ=Asia/Shanghai`) to
+render in the process local time instead (resolved once at startup).
+
 ## Encapsulation
 
 Custom mapping can be used with encapsulation.

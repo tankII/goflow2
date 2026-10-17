@@ -93,3 +93,5 @@ msg="http request" method=GET path=/device-list query="" remote=127.0.0.1:xxxxx 
 ## HTTP 队列监控端点
 
 - `GET /queue-stats`：查看各监听器接收队列深度/容量/使用率（默认 `/queue-stats`，可配 `-queue.stats.path`）
+- `GET /transport-stats`：查看传输层各发送目标的缓冲队列深度/容量/使用率/丢弃数/连接状态（默认 `/transport-stats`，可配 `-transport.stats.path`）；目前仅 `netcat` 传输有数据，其他传输返回 `[]`
+- `GET /ui`：内嵌 Web 面板（单文件、零依赖），汇总接收队列、发送队列与设备列表（可下钻到小时/日聚合），默认 5s 自动刷新；默认 `/ui`，可配 `-web.path`，置空禁用。页面通过内联 JSON 注入实际端点路径，仅暴露已启用的区块。无鉴权，仅监听管理网口。

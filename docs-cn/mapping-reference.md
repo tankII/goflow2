@@ -129,8 +129,8 @@ formatter:
 | `etype` | `uint32` / `uint64` | `IPv4`、`IPv6`、`ARP` | EtherType |
 | `proto` | `uint32` / `uint64` | `TCP`、`UDP`、`ICMP`... | IP 协议号 |
 | `network` | `uint32`（前缀长度） | `10.0.0.1/24` | 配合 SrcNet/DstNet |
-| `datetime` | `uint64`/`int64`（秒） | `2026-09-24T08:00:00Z` | 时间字段（秒级） |
-| `datetimenano` | `uint64`/`int64`（纳秒） | `2026-09-24T08:00:00.123456789Z` | 纳秒精度时间 |
+| `datetime` | `uint64`/`int64`（秒） | `2026-09-24T08:00:00Z` | 时间字段（秒级），支持 `:布局` |
+| `datetimenano` | `uint64`/`int64`（纳秒） | `2026-09-24T08:00:00.123456789Z` | 纳秒精度时间，支持 `:布局` |
 | `string` | `[]byte` / `string` | 原始字符串 | 字节流转字符串 |
 
 - **默认渲染器**（无需显式声明，自动生效）：
@@ -144,6 +144,22 @@ formatter:
   | `SrcNet`, `DstNet` | `network` |
   | `icmp_name` | ICMP 类型名渲染（`EchoReply`、`DestinationUnreachable` 等）|
   | `Ipv6RoutingHeaderAddresses` | `ip` |
+
+- **时间字段自定义格式**：`datetime` / `datetimenano` 支持在 ID 后加 `:布局` 指定输出字符串格式。布局使用 **Go 参考时间**写法（不是 `strftime`）：`.000`=毫秒、`.000000`=微秒、`.000000000`=纳秒：
+
+  ```yaml
+  formatter:
+    render:
+      time_received_ns:   "datetimenano:2006-01-02 15:04:05.000"   # → 2026-10-06 21:42:04.746
+      time_flow_start_ns: "datetimenano:2006-01-02 15:04:05.999"   # 微秒
+      time_flow_start:    "datetime:2006-01-02 15:04:05"           # 秒级源
+  ```
+
+  - 值中含 `:` 与空格，YAML 中**必须加引号**。
+  - 无 `:布局` 的 `datetime`/`datetimenano` 行为不变（RFC3339Nano）。
+
+- **时区**：时间渲染默认使用 **UTC**；设置环境变量 `TZ`（如 `TZ=Asia/Shanghai`）后改为进程本地时间。该设置是全局的，进程启动时生效（同时影响 `/device-stats` 的按小时/按天分桶）。
+
 
 ### 2.5 `literal` — 常量字段
 
@@ -418,9 +434,13 @@ const (
 | `proto` | `1`（uint32）| `ICMP` |
 | `network` | `24`（uint32，配合 SrcNet）| `10.0.0.1/24` |
 | `datetime` | `1727155200`（uint64，秒）| `2024-09-24T00:00:00Z` |
+| `datetime:2006-01-02 15:04:05` | `1727155200`（uint64，秒）| `2024-09-24 00:00:00` |
 | `datetimenano` | `1727155200123456789`（uint64，纳秒）| `2024-09-24T00:00:00.123456789Z` |
+| `datetimenano:2006-01-02 15:04:05.000` | `1727155200746000000`（uint64，纳秒）| `2024-09-24 00:00:00.746` |
 | `string` | `[0x74,0x65,0x73,0x74]`（[]byte）| `test` |
 | `none` | 任意 | 原样输出（bytes 转 hex）|
+
+> `datetime` / `datetimenano` 可加 `:布局` 使用自定义格式（Go 参考时间布局，见 §2.4）。输出时区默认 UTC，设置环境变量 `TZ` 后使用本地时间。
 
 ### 6.3 虚拟字段：`icmp_name`
 

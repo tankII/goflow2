@@ -46,7 +46,8 @@ UDP 收包的瓶颈不在 socket 本身，而在**网卡带宽**和**内核 ring
 ### 2.3 调优优先级
 
 **当出现丢包（packets dropped > 0）时**：
-1. 先检查内核 ring buffer：`sysctl net.core.rmem_max`（建议 ≥ 16MB）
+1. 先检查内核接收缓冲：GoFlow2 未设 `SO_RCVBUF`，实际生效的是 `net.core.rmem_default`
+   （上限受 `net.core.rmem_max` 约束）——需两者一起调大（建议 ≥ 16MB），详见 §3.3
 2. 增加 `count`（更多 socket = 更多 NIC 队列亲和）
 3. 最后考虑增加 `workers`（CPU 解码能力）
 
@@ -87,7 +88,37 @@ iperf3 -c 127.0.0.1 -u -b 900M -l 1400 -t 10
 | `goflow2_netflow_decode_errors_total` | 解码错误 | 应保持为 0 |
 | `process_cpu_seconds_total` | CPU 使用 | 未打满说明有余量 |
 
-### 3.3 快速验证步骤
+> ⚠️ `goflow2_netflow_packets_dropped_total` 只统计 **GoFlow2 应用层**丢弃
+> （dispatch 队列满、非阻塞模式的 `default` 分支），**不含内核 socket 接收缓冲溢出**的丢包。
+> 开启 `blocking=true` 后应用层几乎不再丢弃，丢包只剩内核层——必须用 §3.3 的方法单独确认。
+
+### 3.3 内核层丢包验证（重要）
+
+GoFlow2 **不设置 `SO_RCVBUF`**（源码无 `SetReadBuffer`），socket 使用内核默认接收缓冲
+（`net.core.rmem_default`，常见 ≈208KB，仅够几十个 9KB 报文）。因此"应用层没丢"≠"没丢包"。
+内核接收缓冲溢出导致的丢包，用以下命令查看（应保持**恒定不增长**）：
+
+```bash
+# 1) 全系统 UDP 接收缓冲溢出计数（最直接证据）
+nstat -az UdpRcvbufErrors        # 或：watch -n1 'netstat -su | grep -i error'
+netstat -su | grep -iE "receive buffer errors|packet receive errors"
+
+# 2) per-socket 丢包数 + 定位具体端口
+ss -u -a -m                      # Recv-Q / Drops（不同内核版本显示略有差异）
+cat /proc/net/udp                # 最后一列 = drops
+
+# 3) 其他 UDP 错误（NoPorts / InErrors 等）
+nstat -az | grep -i udp
+```
+
+判读与对策：
+- `UdpRcvbufErrors` 持续增长 → 内核缓冲在包进入 GoFlow2 前就已溢出：
+  - 因 GoFlow2 未调用 `setsockopt`，**仅调 `net.core.rmem_max` 不生效**，必须同时调
+    `net.core.rmem_default`（socket 初始缓冲取此值）：`sysctl -w net.core.rmem_max=16777216 net.core.rmem_default=16777216`
+  - 或增加 `count=N`：N 个 socket 各有一份独立缓冲，等效扩大 N 倍。
+- 只有该计数为 0，才算真正"不丢包"；否则即使 GoFlow2 指标为 0，也仍在丢。
+
+### 3.4 快速验证步骤
 
 ```bash
 # 步骤 1：记录基线（默认配置）
@@ -105,9 +136,14 @@ curl http://localhost:18080/metrics | grep goflow2_netflow
 
 # 步骤 5：若 drop > 0，增加 count 并重试
 GOFLOW2_COUNT=4 GOFLOW2_WORKERS=8 bash run.sh restart
+
+# 步骤 5b：如仍丢包/内存过高，调接收队列：容量（queue_size）或改同步阻塞（blocking）
+GOFLOW2_QUEUE_SIZE=100000 GOFLOW2_WORKERS=8 bash run.sh restart
+# 或（不丢包但会背压到接收协程，queue_size 失效）：
+GOFLOW2_BLOCKING=true GOFLOW2_WORKERS=8 bash run.sh restart
 ```
 
-### 3.4 调优决策树
+### 3.5 调优决策树
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -121,7 +157,8 @@ GOFLOW2_COUNT=4 GOFLOW2_WORKERS=8 bash run.sh restart
    ┌───────┴───────┐          ✅ 当前配置满足需求
    ↓               ↓
 sysctl            增加 count
-rmem_max ≥ 16M？   （每个 socket 分担 NIC 队列）
+rmem_default/max  （每个 socket 分担 NIC 队列）
+≥ 16M？
    │               │
    ├─ 否 ──→ 调整 sysctl
    └─ 是 ──→ 增加 count
@@ -158,7 +195,7 @@ resources:
 
 | 现象 | 原因 | 解决 |
 |------|------|------|
-| 高频丢包 | `rmem_max` 过小 | `sysctl -w net.core.rmem_max=16777216` |
+| 高频丢包 | 内核接收缓冲过小（GoFlow2 用 `rmem_default`，非 `rmem_max`） | `sysctl -w net.core.rmem_max=16777216 net.core.rmem_default=16777216` |
 | 单 socket 拥塞 | `count` 小于 NIC 队列数 | `count >= NIC 队列数` |
 | workers 空转 | `count` 过大导致调度开销 | 减少 `count`，增加 `workers` |
 | 延迟突增 | `queue_size` 过大引发 buffer bloat | 减小 `queue_size` 或启用 `blocking` |
