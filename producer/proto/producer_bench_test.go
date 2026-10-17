@@ -63,6 +63,62 @@ func BenchmarkCustomMappingIPFIX(b *testing.B) {
 	})
 }
 
+func BenchmarkNetFlowMapperMap(b *testing.B) {
+	mapper := mapFieldsNetFlow([]NetFlowMapField{
+		{PenProvided: false, Type: 9999, Pen: 0, Destination: "SrcAddr", Endian: BigEndian},
+		{PenProvided: true, Type: 9999, Pen: 12345, Destination: "DstAddr", Endian: BigEndian},
+	})
+	df := netflow.DataField{Type: 9999, Value: []byte{0x00, 0x00, 0x00, 0x01}}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok := mapper.Map(df); !ok {
+			b.Fatal("field not found")
+		}
+	}
+}
+
+func BenchmarkMapCustom(b *testing.B) {
+	m := mapFieldsNetFlow([]NetFlowMapField{
+		{Type: 9999, Pen: 0, Destination: "SrcAddr", Endian: BigEndian},
+	})
+	cfg, ok := m.Map(netflow.DataField{Type: 9999})
+	if !ok {
+		b.Fatal("field not found")
+	}
+	v := []byte{0x00, 0x00, 0x00, 0x01}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg := &ProtoProducerMessage{}
+		if err := MapCustom(msg, v, cfg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkMapCustomNonFieldDestination(b *testing.B) {
+	m := mapFieldsNetFlow([]NetFlowMapField{
+		{Type: 9999, Pen: 0, Destination: "flow_direction", Endian: BigEndian},
+	})
+	cfg, ok := m.Map(netflow.DataField{Type: 9999})
+	if !ok {
+		b.Fatal("field not found")
+	}
+	v := []byte{0x00, 0x00, 0x00, 0x01}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg := &ProtoProducerMessage{}
+		if err := MapCustom(msg, v, cfg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkCustomMappingSFlow(b *testing.B) {
 	sampledHeader := benchSampledHeaderIPv6()
 	mapper := mapFieldsSFlow([]SFlowMapField{

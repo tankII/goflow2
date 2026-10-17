@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"net"
 	"net/netip"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -255,34 +257,83 @@ func StringRenderer(msg *ProtoProducerMessage, fieldName string, data interface{
 	return NilRenderer(msg, fieldName, data)
 }
 
-// DateTimeRenderer formats a Unix timestamp in seconds.
-func DateTimeRenderer(msg *ProtoProducerMessage, fieldName string, data interface{}) interface{} {
-	if dataC, ok := data.(uint64); ok {
-		ts := time.Unix(int64(dataC), 0).UTC()
-		return ts.Format(time.RFC3339Nano)
-	} else if dataC, ok := data.(int64); ok {
-		ts := time.Unix(dataC, 0).UTC()
-		return ts.Format(time.RFC3339Nano)
-	} else if dataC, ok := data.(uint32); ok {
-		ts := time.Unix(int64(dataC), 0).UTC()
-		return ts.Format(time.RFC3339Nano)
-	} else if dataC, ok := data.(int32); ok {
-		ts := time.Unix(int64(dataC), 0).UTC()
-		return ts.Format(time.RFC3339Nano)
+// rendererLocation is the location used to render timestamps.
+// It defaults to UTC and switches to the process local time (as configured by
+// the TZ environment variable) when TZ is set. It is resolved once at startup.
+var rendererLocation = detectRendererLocation()
+
+func detectRendererLocation() *time.Location {
+	if os.Getenv("TZ") != "" {
+		return time.Local
 	}
-	return NilRenderer(msg, fieldName, data)
+	return time.UTC
 }
 
-// DateTimeNanoRenderer formats a Unix timestamp in nanoseconds.
-func DateTimeNanoRenderer(msg *ProtoProducerMessage, fieldName string, data interface{}) interface{} {
-	if dataC, ok := data.(uint64); ok {
-		ts := time.Unix(int64(dataC)/1e9, int64(dataC)%1e9).UTC()
-		return ts.Format(time.RFC3339Nano)
-	} else if dataC, ok := data.(int64); ok {
-		ts := time.Unix(dataC/1e9, dataC%1e9).UTC()
-		return ts.Format(time.RFC3339Nano)
+// dataToTime converts a raw field value into a time.Time.
+// When nanos is false the value is a Unix timestamp in seconds, otherwise in
+// nanoseconds.
+func dataToTime(data interface{}, nanos bool) (time.Time, bool) {
+	if nanos {
+		switch dataC := data.(type) {
+		case uint64:
+			return time.Unix(int64(dataC)/1e9, int64(dataC)%1e9), true
+		case int64:
+			return time.Unix(dataC/1e9, dataC%1e9), true
+		}
+		return time.Time{}, false
 	}
-	return NilRenderer(msg, fieldName, data)
+	switch dataC := data.(type) {
+	case uint64:
+		return time.Unix(int64(dataC), 0), true
+	case int64:
+		return time.Unix(dataC, 0), true
+	case uint32:
+		return time.Unix(int64(dataC), 0), true
+	case int32:
+		return time.Unix(int64(dataC), 0), true
+	}
+	return time.Time{}, false
+}
+
+// dateTimeFormatRenderer builds a renderer formatting Unix timestamps using the
+// given Go reference-time layout (eg. "2006-01-02 15:04:05.000"), in the
+// configured rendererLocation.
+func dateTimeFormatRenderer(layout string, nanos bool) RenderFunc {
+	return func(msg *ProtoProducerMessage, fieldName string, data interface{}) interface{} {
+		ts, ok := dataToTime(data, nanos)
+		if !ok {
+			return NilRenderer(msg, fieldName, data)
+		}
+		return ts.In(rendererLocation).Format(layout)
+	}
+}
+
+// DateTimeRenderer formats a Unix timestamp in seconds using RFC3339Nano.
+func DateTimeRenderer(msg *ProtoProducerMessage, fieldName string, data interface{}) interface{} {
+	return dateTimeFormatRenderer(time.RFC3339Nano, false)(msg, fieldName, data)
+}
+
+// DateTimeNanoRenderer formats a Unix timestamp in nanoseconds using RFC3339Nano.
+func DateTimeNanoRenderer(msg *ProtoProducerMessage, fieldName string, data interface{}) interface{} {
+	return dateTimeFormatRenderer(time.RFC3339Nano, true)(msg, fieldName, data)
+}
+
+// resolveRenderer resolves a renderer identifier to its function.
+// Besides the built-in names it supports a "<name>:<layout>" form for the
+// datetime/datetimenano renderers to format timestamps with a custom layout.
+func resolveRenderer(id RendererID) (RenderFunc, bool) {
+	if renderer, ok := renderers[id]; ok {
+		return renderer, true
+	}
+	if parts := strings.SplitN(string(id), ":", 2); len(parts) == 2 {
+		switch RendererID(parts[0]) {
+		case RendererDateTime:
+			return dateTimeFormatRenderer(parts[1], false), true
+		case RendererDateTimeNano:
+			return dateTimeFormatRenderer(parts[1], true), true
+		}
+	}
+	return nil, false
 }
 
 // MacRenderer formats a MAC address.

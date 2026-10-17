@@ -108,6 +108,25 @@ func IsInt(k reflect.Kind) bool {
 	return k == reflect.Int8 || k == reflect.Int16 || k == reflect.Int32 || k == reflect.Int64
 }
 
+// resolvedFieldIndex 返回 cfg 在配置构建期就解析好的反射字段下标。
+//
+// 返回值 resolved 表示"绑定是否已解析"：
+//   - resolved == false：cfg 不是经映射器构建的临时配置，调用方必须回退到
+//     reflect.FieldByName（线性扫描 + 分配，仅出现在临时配置/测试路径）；
+//   - resolved == true 且 len(idx) > 0：目标是 protobuf 结构体字段，直接按
+//     下标取值；
+//   - resolved == true 且 len(idx) == 0：目标不是 Go 字段（如 snake_case 的
+//     手动 protobuf 字段，或 destination 为空），此时应跳过 FieldByName，
+//     直接走 protobuf unknown 路径。构建期与运行期类型一致，故跳过不改变行为。
+func resolvedFieldIndex(cfg MappableField) ([]int, bool) {
+	if fi, ok := cfg.(interface{ GetFieldIndex() []int }); ok {
+		if idx := fi.GetFieldIndex(); idx != nil {
+			return idx, true
+		}
+	}
+	return nil, false
+}
+
 // MapCustomNetFlow maps a NetFlow data field into a flow message using a mapper.
 func MapCustomNetFlow(flowMessage *ProtoProducerMessage, df netflow.DataField, mapper TemplateMapper) error {
 	if mapper == nil {
@@ -133,7 +152,17 @@ func MapCustom(flowMessage *ProtoProducerMessage, v []byte, cfg MappableField) e
 	vfm := reflect.ValueOf(flowMessage)
 	vfm = reflect.Indirect(vfm)
 
-	fieldValue := vfm.FieldByName(cfg.GetDestination())
+	// 优先使用映射器构建期解析好的绑定：已解析且有下标 → 按下标取值（零查找开销）；
+	// 已解析但目标不是 Go 字段 → 完全跳过 FieldByName；只有未解析的临时配置才回退
+	// 到 FieldByName（线性扫描 + 分配）。
+	var fieldValue reflect.Value
+	if idx, resolved := resolvedFieldIndex(cfg); resolved {
+		if len(idx) > 0 {
+			fieldValue = vfm.FieldByIndex(idx)
+		}
+	} else {
+		fieldValue = vfm.FieldByName(cfg.GetDestination())
+	}
 
 	if fieldValue.IsValid() {
 		typeDest := fieldValue.Type()

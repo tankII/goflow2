@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/netsampler/goflow2/v3/decoders/netflow"
 )
@@ -141,6 +142,16 @@ type FormatterConfigMapper struct {
 	numToPb map[int32]ProtobufFormatterConfig
 	isSlice map[string]bool
 	literal map[string]string // constant-valued columns
+
+	planOnce sync.Once
+	plan     *compiledPlan
+}
+
+func (f *FormatterConfigMapper) compiledPlan() *compiledPlan {
+	f.planOnce.Do(func() {
+		f.plan = compilePlan(f)
+	})
+	return f.plan
 }
 
 func (f *FormatterConfigMapper) Keys() []string {
@@ -181,15 +192,26 @@ func (f *FormatterConfigMapper) IsArray(name string) bool {
 	return f.isSlice[name]
 }
 
+// netFlowMapKey 用于在映射器中定位 NetFlow 模板字段。
+//
+// 取代原先 fmt.Sprintf("%v-%d-%d", ...) 的字符串键：旧实现在每个被映射字段上都要
+// 格式化并分配字符串（现网 profile 中占 13.4% CPU / 5.1GB 分配）。改为可比较的
+// 结构体键后，热路径为纯查表，零分配。
+type netFlowMapKey struct {
+	penProvided bool
+	pen         uint32
+	fieldType   uint16
+}
+
 type NetFlowMapper struct {
-	data map[string]*DataMap // maps field to destination
+	data map[netFlowMapKey]*DataMap // maps field to destination
 }
 
 func (m *NetFlowMapper) Map(field netflow.DataField) (MappableField, bool) {
 	if m == nil {
 		return &DataMap{}, false
 	}
-	mapped, found := m.data[fmt.Sprintf("%v-%d-%d", field.PenProvided, field.Pen, field.Type)]
+	mapped, found := m.data[netFlowMapKey{penProvided: field.PenProvided, pen: field.Pen, fieldType: field.Type}]
 	return mapped, found
 }
 
@@ -241,6 +263,11 @@ type MapConfigBase struct {
 	ProtoIndex int32
 	ProtoType  ProtoType
 	ProtoArray bool
+
+	// fieldIndex 为 Destination 在 protobuf 消息中的反射下标路径，在映射器构建
+	// 期解析一次（见 resolveFieldIndex）；非 nil 表示"已解析"，空切片表示目标不是
+	// Go 字段。MapCustom 据此跳过每字段的 reflect.FieldByName。
+	fieldIndex []int
 }
 
 func (c *MapConfigBase) GetEndianness() EndianType {
@@ -261,6 +288,30 @@ func (c *MapConfigBase) GetProtoType() ProtoType {
 
 func (c *MapConfigBase) IsArray() bool {
 	return c.ProtoArray
+}
+
+// GetFieldIndex 返回构建期解析好的 Destination 反射下标路径。
+// nil 表示未解析（临时配置，调用方需回退 FieldByName）；空切片表示目标不是 Go 字段。
+func (c *MapConfigBase) GetFieldIndex() []int {
+	return c.fieldIndex
+}
+
+// resolveFieldIndex 在配置构建期解析一次目标 protobuf 字段的反射下标并缓存，
+// 使 MapCustom 热路径不必对每个字段调用 reflect.FieldByName（线性扫描约 100 个
+// 字段且伴随分配）。
+//
+// 这里总是把 fieldIndex 置为非 nil（解析不到 Go 字段时为空切片），即"已解析"
+// 状态被显式记录：现网 mapping 的 destination 常为 snake_case 的手动 protobuf
+// 字段（如 flow_direction），这类目标本来就不是 Go 字段，若仍标记为未解析，
+// 热路径会对每条记录回退到注定失败的 FieldByName。
+func resolveFieldIndex(v *MapConfigBase) {
+	v.fieldIndex = []int{}
+	if v.Destination == "" {
+		return
+	}
+	if sf, ok := protoMessageType.FieldByName(v.Destination); ok {
+		v.fieldIndex = sf.Index
+	}
 }
 
 // Extended structure for packet mapping
@@ -294,6 +345,7 @@ func mapFieldsSFlow(fields []SFlowMapField) *SFlowMapper {
 		}
 		retLayerEntry.Destination = field.Destination
 		retLayerEntry.Endianness = field.Endian
+		resolveFieldIndex(&retLayerEntry.MapConfigBase)
 		retLayer := ret[field.Layer]
 		retLayer = append(retLayer, retLayerEntry)
 		ret[field.Layer] = retLayer
@@ -316,12 +368,13 @@ func mapPortsSFlow(ports []SFlowProtocolParse) (ParserEnvironment, error) {
 }
 
 func mapFieldsNetFlow(fields []NetFlowMapField) *NetFlowMapper {
-	ret := make(map[string]*DataMap)
+	ret := make(map[netFlowMapKey]*DataMap)
 	for _, field := range fields {
 		dm := &DataMap{}
 		dm.Destination = field.Destination
 		dm.Endianness = field.Endian
-		ret[fmt.Sprintf("%v-%d-%d", field.PenProvided, field.Pen, field.Type)] = dm
+		resolveFieldIndex(&dm.MapConfigBase)
+		ret[netFlowMapKey{penProvided: field.PenProvided, pen: field.Pen, fieldType: field.Type}] = dm
 	}
 	return &NetFlowMapper{data: ret}
 }
@@ -362,7 +415,7 @@ func (c *producerConfigMapped) finalizeNetFlowMapper(m *NetFlowMapper) error {
 	}
 	for k, v := range m.data {
 		if err := c.finalizemapDest(&(v.MapConfigBase)); err != nil {
-			return fmt.Errorf("finalize netflow mapper %s: %w", k, err)
+			return fmt.Errorf("finalize netflow mapper %v: %w", k, err)
 		}
 		m.data[k] = v
 	}
@@ -455,7 +508,7 @@ func mapFormat(cfg *ProducerConfig) (*FormatterConfigMapper, error) {
 			if kk, ok := reMap[k]; ok && kk != "" {
 				k = kk
 			}
-			if renderer, ok := renderers[v]; ok {
+			if renderer, ok := resolveRenderer(v); ok {
 				formatterMapped.render[k] = renderer
 			} else {
 				return formatterMapped, fmt.Errorf("field %s is not a renderer", v) // todo: make proper error

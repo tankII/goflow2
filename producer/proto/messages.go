@@ -6,6 +6,7 @@ import (
 	"hash"
 	"hash/fnv"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -77,30 +78,27 @@ func (m *ProtoProducerMessage) MarshalText() ([]byte, error) {
 }
 
 func (m *ProtoProducerMessage) baseKey(h hash.Hash) {
-	vfm := reflect.ValueOf(m)
-	vfm = reflect.Indirect(vfm)
+	plan := m.fieldPlan()
+	if len(plan.keys) == 0 {
+		return
+	}
 
-	unkMap := m.mapUnknown() // todo: should be able to reuse if set in structure
+	var unkMap map[string]interface{}
+	if plan.keysNeedUnknown {
+		unkMap = m.mapUnknown()
+	}
 
-	for _, s := range m.formatter.Keys() {
-		fieldName := s
+	vfm := reflect.ValueOf(m).Elem()
+	for i := range plan.keys {
+		ck := &plan.keys[i]
 
-		// get original name from structure
-		if fieldNameMap, ok := m.formatter.Remap(fieldName); ok && fieldNameMap != "" {
-			fieldName = fieldNameMap
-		}
-
-		fieldValue := vfm.FieldByName(fieldName)
-		// if does not exist from structure,
-		// fetch from unknown (only numbered) fields
-		// that were parsed above
-
-		if !fieldValue.IsValid() {
-			if unkField, ok := unkMap[s]; ok {
-				fieldValue = reflect.ValueOf(unkField)
-			} else {
-				continue
-			}
+		var fieldValue reflect.Value
+		if ck.hasField {
+			fieldValue = vfm.FieldByIndex(ck.fieldIndex)
+		} else if unkField, ok := unkMap[ck.name]; ok {
+			fieldValue = reflect.ValueOf(unkField)
+		} else {
+			continue
 		}
 		if _, err := fmt.Fprintf(h, "%v", fieldValue.Interface()); err != nil {
 			return
@@ -109,7 +107,7 @@ func (m *ProtoProducerMessage) baseKey(h hash.Hash) {
 }
 
 func (m *ProtoProducerMessage) Key() []byte {
-	if len(m.formatter.Keys()) == 0 {
+	if len(m.fieldPlan().keys) == 0 {
 		return nil
 	}
 	h := fnv.New32()
@@ -143,10 +141,11 @@ func ExtractTag(name, original string, tag reflect.StructTag) string {
 }
 
 func (m *ProtoProducerMessage) mapUnknown() map[string]interface{} {
+	unk := m.ProtoReflect().GetUnknown()
+	if len(unk) == 0 {
+		return nil
+	}
 	unkMap := make(map[string]interface{})
-
-	fmr := m.ProtoReflect()
-	unk := fmr.GetUnknown()
 	var offset int
 	for offset < len(unk) {
 		num, dataType, length := protowire.ConsumeTag(unk[offset:])
@@ -196,74 +195,306 @@ type valueRender struct {
 	isStr bool
 }
 
+// fieldPart is a single rendered output column. The common (non-array) case
+// stores its single value inline to avoid a per-column heap allocation; array
+// columns fall back to a dynamically grown slice.
 type fieldPart struct {
+	present   bool
 	finalName string
 	array     bool
 	length    int   // original slice length (used to mirror comma placement)
 	indices   []int // original indices of appended items
 	values    []valueRender
+	inline    [1]valueRender
 }
 
-// renderFieldParts returns the per-field rendered values in formatter.Fields()
-// order. Fields that are missing (and not virtual) map to nil so callers may
-// either compact the output (text) or preserve column alignment (CSV).
-func (m *ProtoProducerMessage) renderFieldParts() []*fieldPart {
-	vfm := reflect.ValueOf(m)
-	vfm = reflect.Indirect(vfm)
+// reset 将 fieldPart 复位为零值，但保留 inline 内联存储，使常见的单值列仍无需分配。
+func (p *fieldPart) reset() {
+	p.present = false
+	p.finalName = ""
+	p.array = false
+	p.length = 0
+	p.indices = p.indices[:0]
+	p.values = p.inline[:0]
+	p.inline[0] = valueRender{}
+}
 
-	fields := m.formatter.Fields()
-	parts := make([]*fieldPart, len(fields))
-	unkMap := m.mapUnknown()
+// fieldPartsPool 复用每条消息的 []fieldPart 切片。
+// 渲染在每条 flow 上都会执行，"每条消息新建一个切片"曾是堆分配的大头（现网约 1.1KB/条）。
+var fieldPartsPool = sync.Pool{
+	New: func() any {
+		s := make([]fieldPart, 0, 32)
+		return &s
+	},
+}
 
-	for idx, s := range fields {
+// acquireFieldParts 返回长度为 n 的、已复位的切片，供 renderFieldParts 填充。
+// 返回的指针必须在使用完毕后交回 releaseFieldParts。
+func acquireFieldParts(n int) *[]fieldPart {
+	sp := fieldPartsPool.Get().(*[]fieldPart)
+	s := *sp
+	if cap(s) < n {
+		s = make([]fieldPart, n)
+		*sp = s
+	}
+	s = s[:n]
+	for i := range s {
+		s[i].reset()
+	}
+	return sp
+}
+
+// releaseFieldParts 把切片归还池中；归还前先清空对渲染结果的引用，
+// 避免池内条目长期持有消息数据而无法回收。
+func releaseFieldParts(sp *[]fieldPart) {
+	s := *sp
+	for i := range s {
+		s[i].values = nil
+		s[i].indices = nil
+		s[i].finalName = ""
+	}
+	*sp = s
+	fieldPartsPool.Put(sp)
+}
+
+// compiledField is a per-column rendering plan precomputed once per formatter.
+// It removes the per-message reflection (FieldByName) and the repeated map
+// lookups that a reflective renderer would perform for every flow.
+type compiledField struct {
+	finalName   string // display name (after rename)
+	renderName  string // name passed to the renderer (after remap)
+	unkName     string // key to look up in the unknown-field map
+	litVal      string
+	literal     bool
+	hasField    bool
+	fieldIndex  []int
+	renderer    RenderFunc
+	hasRenderer bool
+	isArray     bool
+
+	// directScalar 表示"原生 protobuf 标量列且用户未自定义 renderer"。
+	// 这类列无需装箱成 interface 再交给 renderer，可在渲染期直接取值。
+	directScalar bool
+}
+
+// scalarDirect reports whether a reflect.Kind can be formatted without boxing.
+// 与 renderValue 的标量分支保持一致（此消息的标量列均为 uint32/uint64）。
+func scalarDirect(k reflect.Kind) bool {
+	switch k {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Bool:
+		return true
+	}
+	return false
+}
+
+type compiledKey struct {
+	name       string
+	hasField   bool
+	fieldIndex []int
+}
+
+type compiledPlan struct {
+	fields          []compiledField
+	keys            []compiledKey
+	needsUnknown    bool
+	keysNeedUnknown bool
+}
+
+var protoMessageType = reflect.TypeOf((*ProtoProducerMessage)(nil)).Elem()
+
+// compilePlan resolves once, per formatter, everything that does not depend on
+// the message: field indices, renderers, literals and array-ness.
+func compilePlan(f FormatterMapper) *compiledPlan {
+	fields := f.Fields()
+	plan := &compiledPlan{fields: make([]compiledField, len(fields))}
+	for i, s := range fields {
+		cf := compiledField{unkName: s, renderer: NilRenderer}
+		if rn, ok := f.Rename(s); ok && rn != "" {
+			cf.finalName = rn
+		} else {
+			cf.finalName = s
+		}
+		if lit, ok := f.Literal(s); ok {
+			cf.literal = true
+			cf.litVal = lit
+			plan.fields[i] = cf
+			continue
+		}
 		fieldName := s
+		if rm, ok := f.Remap(fieldName); ok && rm != "" {
+			fieldName = rm
+		}
+		cf.renderName = fieldName
+		if renderer, ok := f.Render(fieldName); ok {
+			cf.renderer = renderer
+			cf.hasRenderer = true
+		}
+		fieldKind := reflect.Invalid
+		if sf, ok := protoMessageType.FieldByName(fieldName); ok {
+			cf.hasField = true
+			cf.fieldIndex = sf.Index
+			fieldKind = sf.Type.Kind()
+		} else {
+			// No struct field: the value can only come from the unknown-field map.
+			plan.needsUnknown = true
+		}
+		cf.isArray = f.IsArray(fieldName)
+		// 原生标量列 + 未自定义 renderer → 可跳过装箱与 renderer，直接格式化。
+		cf.directScalar = cf.hasField && !cf.isArray && !cf.hasRenderer && scalarDirect(fieldKind)
+		plan.fields[i] = cf
+	}
+
+	for _, s := range f.Keys() {
+		ck := compiledKey{name: s}
+		fieldName := s
+		if rm, ok := f.Remap(fieldName); ok && rm != "" {
+			fieldName = rm
+		}
+		if sf, ok := protoMessageType.FieldByName(fieldName); ok {
+			ck.hasField = true
+			ck.fieldIndex = sf.Index
+		} else {
+			plan.keysNeedUnknown = true
+		}
+		plan.keys = append(plan.keys, ck)
+	}
+
+	return plan
+}
+
+func (m *ProtoProducerMessage) fieldPlan() *compiledPlan {
+	if p, ok := m.formatter.(interface{ compiledPlan() *compiledPlan }); ok {
+		return p.compiledPlan()
+	}
+	return compilePlan(m.formatter)
+}
+
+// renderValue 以与 fmt.Sprintf("%v", v) 相同的方式格式化渲染结果，
+// 但对常见标量不做反射。第二个返回值表示是否为字符串（供 JSON 格式化器决定加引号）。
+func renderValue(v interface{}) (string, bool) {
+	switch val := v.(type) {
+	case string:
+		return val, true
+	case int:
+		return strconv.Itoa(val), false
+	case int8:
+		return strconv.FormatInt(int64(val), 10), false
+	case int16:
+		return strconv.FormatInt(int64(val), 10), false
+	case int32:
+		return strconv.FormatInt(int64(val), 10), false
+	case int64:
+		return strconv.FormatInt(val, 10), false
+	case uint:
+		return strconv.FormatUint(uint64(val), 10), false
+	case uint8:
+		return strconv.FormatUint(uint64(val), 10), false
+	case uint16:
+		return strconv.FormatUint(uint64(val), 10), false
+	case uint32:
+		return strconv.FormatUint(uint64(val), 10), false
+	case uint64:
+		return strconv.FormatUint(val, 10), false
+	case bool:
+		return strconv.FormatBool(val), false
+	}
+	return fmt.Sprintf("%v", v), reflect.TypeOf(v).Kind() == reflect.String
+}
+
+// appendScalar 把原生标量字段直接追加到 dst，不经 interface{} 装箱，
+// 输出与 renderValue 的标量分支完全一致（数字不加引号，bool 输出 true/false）。
+func appendScalar(dst []byte, v reflect.Value) []byte {
+	switch v.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.AppendUint(dst, v.Uint(), 10)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.AppendInt(dst, v.Int(), 10)
+	case reflect.Bool:
+		return strconv.AppendBool(dst, v.Bool())
+	}
+	// 理论上不会走到（directScalar 只由 scalarDirect 判定为标量时置位）。
+	return append(dst, fmt.Sprintf("%v", v.Interface())...)
+}
+
+// renderScalar 是需要字符串形态的调用方（text/JSON、CSVValues）使用的版本。
+func renderScalar(v reflect.Value) string {
+	switch v.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(v.Uint(), 10)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(v.Int(), 10)
+	case reflect.Bool:
+		return strconv.FormatBool(v.Bool())
+	}
+	return fmt.Sprintf("%v", v.Interface())
+}
+
+// renderFieldParts 将渲染结果写入池化切片（长度 len(plan.fields)）。
+// 缺失的（非虚拟）字段 present=false，调用方可据此压缩输出（text/JSON）
+// 或保持列对齐（CSV）。
+// skipDirectScalar 为 true 时（CSV 追加路径）不为原生标量列生成字符串，
+// 由调用方直接取值追加，从而完全避免中间字符串分配。
+func (m *ProtoProducerMessage) renderFieldParts(sp *[]fieldPart, skipDirectScalar bool) []fieldPart {
+	plan := m.fieldPlan()
+	if cap(*sp) < len(plan.fields) {
+		*sp = make([]fieldPart, len(plan.fields))
+	}
+	parts := (*sp)[:len(plan.fields)]
+	for i := range parts {
+		parts[i].reset()
+	}
+
+	var unkMap map[string]interface{}
+	if plan.needsUnknown {
+		unkMap = m.mapUnknown()
+	}
+
+	vfm := reflect.ValueOf(m).Elem()
+	for idx := range plan.fields {
+		cf := &plan.fields[idx]
+		part := &parts[idx]
 
 		// constant (non-native) columns take precedence: emit the configured
 		// value verbatim, honoring any rename for the display name.
-		if lit, ok := m.formatter.Literal(s); ok {
-			part := &fieldPart{
-				values: []valueRender{{val: lit, isStr: true}},
-			}
-			if fieldRename, ok := m.formatter.Rename(s); ok && fieldRename != "" {
-				part.finalName = fieldRename
-			} else {
-				part.finalName = s
-			}
-			parts[idx] = part
+		if cf.literal {
+			part.present = true
+			part.finalName = cf.finalName
+			part.inline[0] = valueRender{val: cf.litVal, isStr: true}
+			part.values = part.inline[:1]
 			continue
 		}
 
-		// get original name from structure
-		if fieldNameMap, ok := m.formatter.Remap(fieldName); ok && fieldNameMap != "" {
-			fieldName = fieldNameMap
+		var fieldValue reflect.Value
+		if cf.hasField {
+			fieldValue = vfm.FieldByIndex(cf.fieldIndex)
+		} else if unkField, ok := unkMap[cf.unkName]; ok {
+			fieldValue = reflect.ValueOf(unkField)
+		} else if !cf.hasRenderer { // not a virtual field
+			continue
 		}
 
-		// get renderer
-		renderer, okRenderer := m.formatter.Render(fieldName)
-		if !okRenderer {
-			renderer = NilRenderer
-		}
+		part.finalName = cf.finalName
+		part.array = cf.isArray
 
-		fieldValue := vfm.FieldByName(fieldName)
-		// if does not exist from structure,
-		// fetch from unknown (only numbered) fields
-		// that were parsed above
-
-		if !fieldValue.IsValid() {
-			if unkField, ok := unkMap[s]; ok {
-				fieldValue = reflect.ValueOf(unkField)
-			} else if !okRenderer { // not a virtual field
-				continue
+		// 原生标量列（未自定义 renderer）：跳过 Interface() 装箱与 renderer 调用。
+		// 值仍经 renderValue 格式化，保证 text/JSON 路径输出与旧实现完全一致；
+		// CSV 路径会在 AppendCSVRow 中进一步直接 append，省掉中间字符串。
+		if cf.directScalar {
+			part.present = true
+			if fieldValue.IsValid() && !skipDirectScalar {
+				part.inline[0] = valueRender{val: renderScalar(fieldValue)}
+				part.values = part.inline[:1]
 			}
+			continue
 		}
-
-		isSlice := m.formatter.IsArray(fieldName)
-		part := &fieldPart{array: isSlice}
 
 		// render each item of the array independently
-		// note: isSlice is necessary to consider certain byte arrays in their entirety
+		// note: isArray is necessary to consider certain byte arrays in their entirety
 		// eg: IP addresses
-		if isSlice {
+		if cf.isArray {
+			part.present = true
 			if fieldValue.IsValid() {
 				c := fieldValue.Len()
 				part.length = c
@@ -273,104 +504,202 @@ func (m *ProtoProducerMessage) renderFieldParts() []*fieldPart {
 					if fieldValueI.IsValid() {
 						val = fieldValueI.Interface()
 					}
-
-					rendered := renderer(m, fieldName, val)
+					rendered := cf.renderer(m, cf.renderName, val)
 					if rendered == nil {
 						continue
 					}
-					renderedType := reflect.TypeOf(rendered)
-					part.values = append(part.values, valueRender{
-						val:   fmt.Sprintf("%v", rendered),
-						isStr: renderedType.Kind() == reflect.String,
-					})
+					s, isStr := renderValue(rendered)
+					part.values = append(part.values, valueRender{val: s, isStr: isStr})
 					part.indices = append(part.indices, i)
 				}
 			}
-		} else {
-			var val interface{}
-			if fieldValue.IsValid() {
-				val = fieldValue.Interface()
-			}
-
-			rendered := renderer(m, fieldName, val)
-			if rendered == nil {
-				continue
-			}
-			renderedType := reflect.TypeOf(rendered)
-			part.values = []valueRender{{
-				val:   fmt.Sprintf("%v", rendered),
-				isStr: renderedType.Kind() == reflect.String,
-			}}
+			continue
 		}
 
-		// rename only affects the display name of the field
-		if fieldRename, ok := m.formatter.Rename(s); ok && fieldRename != "" {
-			part.finalName = fieldRename
-		} else {
-			part.finalName = s
+		var val interface{}
+		if fieldValue.IsValid() {
+			val = fieldValue.Interface()
 		}
-
-		parts[idx] = part
+		rendered := cf.renderer(m, cf.renderName, val)
+		if rendered == nil {
+			continue
+		}
+		s, isStr := renderValue(rendered)
+		part.present = true
+		part.inline[0] = valueRender{val: s, isStr: isStr}
+		part.values = part.inline[:1]
 	}
+
 	return parts
 }
 
 // FormatMessageReflectCustom renders a custom-delimited representation.
 func (m *ProtoProducerMessage) FormatMessageReflectCustom(ext, quotes, sep, sign string, null bool) string {
-	fstr := make([]string, 0, len(m.formatter.Fields()))
+	sp := acquireFieldParts(len(m.fieldPlan().fields))
+	parts := m.renderFieldParts(sp, false)
+	var b strings.Builder
+	first := true
+	for i := range parts {
+		part := &parts[i]
+		if !part.present {
+			continue
+		}
+		if !first {
+			b.WriteString(sep)
+		}
+		first = false
 
-	for _, part := range m.renderFieldParts() {
-		if part == nil {
+		if part.array {
+			b.WriteString(quotes)
+			b.WriteString(part.finalName)
+			b.WriteString(quotes)
+			b.WriteString(sign)
+			b.WriteByte('[')
+			for j, it := range part.values {
+				if it.isStr {
+					b.WriteString(quotes)
+					b.WriteString(it.val)
+					b.WriteString(quotes)
+				} else {
+					b.WriteString(it.val)
+				}
+				if part.indices[j] < part.length-1 {
+					b.WriteByte(',')
+				}
+			}
+			b.WriteByte(']')
 			continue
 		}
 
-		if part.array {
-			v := "["
-
-			for j, it := range part.values {
-				if it.isStr {
-					v += fmt.Sprintf("%s%v%s", quotes, it.val, quotes)
-				} else {
-					v += fmt.Sprintf("%v", it.val)
-				}
-
-				if part.indices[j] < part.length-1 {
-					v += ","
-				}
-			}
-			v += "]"
-			fstr = append(fstr, fmt.Sprintf("%s%s%s%s%s", quotes, part.finalName, quotes, sign, v))
+		b.WriteString(quotes)
+		b.WriteString(part.finalName)
+		b.WriteString(quotes)
+		b.WriteString(sign)
+		if part.values[0].isStr {
+			b.WriteString(quotes)
+			b.WriteString(part.values[0].val)
+			b.WriteString(quotes)
 		} else {
-			if part.values[0].isStr {
-				fstr = append(fstr, fmt.Sprintf("%s%s%s%s%s%v%s", quotes, part.finalName, quotes, sign, quotes, part.values[0].val, quotes))
-			} else {
-				fstr = append(fstr, fmt.Sprintf("%s%s%s%s%v", quotes, part.finalName, quotes, sign, part.values[0].val))
-			}
+			b.WriteString(part.values[0].val)
 		}
-
 	}
+	releaseFieldParts(sp)
 
-	return strings.Join(fstr, sep)
+	return b.String()
+}
+
+// csvValuesFromParts 把渲染结果映射为 CSV 列，追加到 dst 中，
+// 便于调用方复用一个底层数组。
+func csvValuesFromParts(parts []fieldPart, dst []string) []string {
+	for i := range parts {
+		part := &parts[i]
+		if !part.present {
+			dst = append(dst, "")
+			continue
+		}
+		if part.array {
+			var b strings.Builder
+			b.WriteByte('[')
+			for j, it := range part.values {
+				if j > 0 {
+					b.WriteByte(',')
+				}
+				b.WriteString(it.val)
+			}
+			b.WriteByte(']')
+			dst = append(dst, b.String())
+		} else {
+			dst = append(dst, part.values[0].val)
+		}
+	}
+	return dst
+}
+
+// appendCSVValues 把 CSV 各列渲染进 dst，复用其底层数组；dst 本身保持不变，
+// 返回（可能已扩容的）切片。
+func (m *ProtoProducerMessage) appendCSVValues(dst []string) []string {
+	sp := acquireFieldParts(len(m.fieldPlan().fields))
+	parts := m.renderFieldParts(sp, false)
+	out := csvValuesFromParts(parts, dst[:0])
+	releaseFieldParts(sp)
+	return out
 }
 
 // CSVValues returns the rendered values in formatter.Fields() order. Missing
 // (non-virtual) fields map to empty strings so columns stay aligned.
 func (m *ProtoProducerMessage) CSVValues() []string {
-	parts := m.renderFieldParts()
-	out := make([]string, len(parts))
-	for i, part := range parts {
-		if part == nil {
-			continue
+	return m.appendCSVValues(nil)
+}
+
+// csvNeedsQuote 与 CSV 转义规则一致：当值包含分隔符、引号、CR/LF，
+// 或首尾为空格/制表符时需要加引号。
+func csvNeedsQuote(v string, delim string) bool {
+	if strings.Contains(v, delim) || strings.ContainsAny(v, "\"\r\n") {
+		return true
+	}
+	if len(v) == 0 {
+		return false
+	}
+	if c := v[0]; c == ' ' || c == '\t' {
+		return true
+	}
+	if c := v[len(v)-1]; c == ' ' || c == '\t' {
+		return true
+	}
+	return false
+}
+
+// appendCSVField 按 RFC 4180 规则转义并追加单个 CSV 列。
+func appendCSVField(dst []byte, v string, delim string) []byte {
+	if !csvNeedsQuote(v, delim) {
+		return append(dst, v...)
+	}
+	dst = append(dst, '"')
+	for i := 0; i < len(v); i++ {
+		if v[i] == '"' {
+			dst = append(dst, '"')
 		}
-		if part.array {
-			items := make([]string, len(part.values))
+		dst = append(dst, v[i])
+	}
+	return append(dst, '"')
+}
+
+// AppendCSVRow 将整条消息渲染为一行转义后的 CSV 并追加到 dst。
+// 输出与优化前 CSVValues + strings.Join 的结果逐字节一致，但不产生中间字符串。
+func (m *ProtoProducerMessage) AppendCSVRow(dst []byte, delim string) []byte {
+	plan := m.fieldPlan()
+	sp := acquireFieldParts(len(plan.fields))
+	parts := m.renderFieldParts(sp, true)
+
+	vfm := reflect.ValueOf(m).Elem()
+	var arr []byte
+	for i := range parts {
+		if i > 0 {
+			dst = append(dst, delim...)
+		}
+		part := &parts[i]
+		switch {
+		case !part.present:
+			// missing column: empty, unquoted
+		case plan.fields[i].directScalar:
+			// 原生标量列：数字/布尔无需转义，直接 strconv 追加，不产生中间字符串。
+			dst = appendScalar(dst, vfm.FieldByIndex(plan.fields[i].fieldIndex))
+		case part.array:
+			arr = arr[:0]
+			arr = append(arr, '[')
 			for j, it := range part.values {
-				items[j] = it.val
+				if j > 0 {
+					arr = append(arr, ',')
+				}
+				arr = append(arr, it.val...)
 			}
-			out[i] = "[" + strings.Join(items, ",") + "]"
-		} else {
-			out[i] = part.values[0].val
+			arr = append(arr, ']')
+			dst = appendCSVField(dst, string(arr), delim)
+		default:
+			dst = appendCSVField(dst, part.values[0].val, delim)
 		}
 	}
-	return out
+	releaseFieldParts(sp)
+
+	return dst
 }
