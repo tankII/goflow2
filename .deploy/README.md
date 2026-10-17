@@ -57,6 +57,8 @@ bash run.sh start
 | `GOFLOW2_LISTEN` | `sflow://:6343,netflow://:2055` | 采集监听地址 |
 | `GOFLOW2_COUNT` | 无 | 每个监听地址的 UDP socket 数（自动追加 `?count=N`，默认 1） |
 | `GOFLOW2_WORKERS` | 无 | 解码并行度：每个监听地址的 worker 数（自动追加 `?workers=N`，默认 = count×2） |
+| `GOFLOW2_QUEUE_SIZE` | 无 | 每个监听地址的接收队列容量（自动追加 `?queue_size=N`；默认非阻塞 1000000，≈N×9KB 内存） |
+| `GOFLOW2_BLOCKING` | 无 | 每个监听地址同步阻塞接收（自动追加 `?blocking=true/false`；`true` 时不丢包，`queue_size` 失效） |
 | `GOFLOW2_FORMAT` | `json` | 输出格式：`json` / `csv` / `text` / `bin` |
 | `GOFLOW2_TRANSPORT` | `file` | 传输方式：`file` / `kafka` / `netcat` |
 | `GOFLOW2_FILE_PATH` | 无 | flow 输出文件路径（`TRANSPORT=file` 时；留空 → stdout） |
@@ -67,6 +69,8 @@ bash run.sh start
 | `GOFLOW2_NETCAT_RECONNECT_INTERVAL` | `3s` | 连接失败后重连间隔 |
 | `GOFLOW2_NETCAT_QUEUE` | `1024` | 每目标缓冲队列大小 |
 | `GOFLOW2_NETCAT_DROP` | `1` | 队列满时丢弃新记录（`0` 则阻塞 Send） |
+| `GOFLOW2_NETCAT_FLUSH_INTERVAL` | `200ms` | 批量写最大延迟：记录在写缓冲中最多滞留多久就交给内核（缓冲满时立即发送） |
+| `GOFLOW2_NETCAT_WRITE_BUFFER` | `65536` | 每目标写缓冲大小，用于把多条记录合并成更少的 socket 写 |
 | `GOFLOW2_KAFKA_BROKERS` | 无 | Kafka broker 地址（逗号分隔，`TRANSPORT=kafka` 时必填） |
 | `GOFLOW2_KAFKA_TOPIC` | `flow-messages` | Kafka topic |
 | `GOFLOW2_KAFKA_SASL` | `none` | SASL 机制：`none` / `plain` / `scram-sha256` / `scram-sha512` / `gssapi` |
@@ -90,6 +94,12 @@ bash run.sh start
 | `GOFLOW2_DEVICE_STATS_PATH` | `/device-stats` | 设备统计端点前缀 |
 | `GOFLOW2_DEVICE_RETENTION_HOURLY` | `72h` | 小时桶保留时长 |
 | `GOFLOW2_DEVICE_RETENTION_DAILY` | `2160h` | 日桶保留时长（Go duration，90 天写作 `2160h`） |
+| `GOFLOW2_METRICS` | `true` | 全局统计开关：设 `0`/`false` 关闭全部 Prometheus 指标发射与设备统计聚合 |
+| `GOFLOW2_PPROF` | `false` | 设 `1`/`true` 在状态端口开放 `/debug/pprof`（CPU/内存剖析），用于排查性能问题；用完请关闭 |
+| `GOFLOW2_TEMPLATES_TTL` | `0` | NetFlow/IPFIX 模板 TTL；**`0` 表示永不过期**。长期运行建议设 `1h`（模板标准刷新周期 60s），否则模板条目随设备/观测域持续累积 |
+| `GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS` | `false` | 访问模板时是否续期；取值过小会反复丢模板并触发 fallback 解码，请勿低于模板刷新周期 |
+| `GOFLOW2_SAMPLING_TTL` | `0` | 采样率 TTL；**`0` 表示永不过期**，建议设 `1h` |
+| `GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS` | `false` | 访问采样率时是否续期 |
 
 ## 示例：设备统计查询
 
@@ -105,7 +115,13 @@ curl "http://127.0.0.1:18080/device-stats/daily?router=127.0.0.1"
 
 # 接收队列使用情况（JSON，默认 /queue-stats，可配 -queue.stats.path）
 curl "http://127.0.0.1:18080/queue-stats"
+
+# 发送目标缓冲队列使用情况（JSON，默认 /transport-stats，可配 -transport.stats.path；
+# 仅 netcat 传输有数据，含 addr/depth/capacity/utilization/dropped/connected/drop）
+curl "http://127.0.0.1:18080/transport-stats"
 ```
+
+浏览器打开 `http://127.0.0.1:18080/ui` 可查看内嵌 Web 面板（无需额外依赖）：接收队列、发送队列使用率，以及设备列表（点击行下钻到小时/日聚合）。默认 5s 自动刷新，可切换 10s/30s/暂停或手动刷新。路径由 `-web.path`（`GOFLOW2_WEB_PATH`）配置，默认 `/ui`，置空禁用。面板无鉴权，仅监听管理网口。
 
 在 Prometheus 侧可抓取 `/metrics`，其中 `goflow2_device_*` 系列（`device_active_count`、`device_last_seen_timestamp_seconds{router}`、`device_packets_total{router}`、`device_flows_total{router}`）实时反映设备活跃度。
 

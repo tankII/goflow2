@@ -6,8 +6,16 @@
 #   GOFLOW2_LISTEN          监听地址，默认 sflow://:6343,netflow://:2055
 #   GOFLOW2_COUNT           每个监听地址的 UDP socket 数（可选，追加 ?count=N）
 #   GOFLOW2_WORKERS         每个监听地址的解码并行 worker 数（可选，追加 ?workers=N）
+#   GOFLOW2_QUEUE_SIZE      每个监听地址的接收队列容量（可选，追加 ?queue_size=N；默认非阻塞 1000000）
+#   GOFLOW2_BLOCKING        每个监听地址同步阻塞接收（可选，追加 ?blocking=true/false；true 时不丢包，队列容量失效）
 #   GOFLOW2_FORMAT          输出格式，默认 json
 #   GOFLOW2_TRANSPORT       传输方式，默认 file
+#   GOFLOW2_METRICS         全局统计开关，默认 true；0/false 关闭全部 Prometheus 指标与设备统计
+#   GOFLOW2_PPROF           启用 /debug/pprof CPU/内存剖析端点，默认 false；1/true 开启
+#   GOFLOW2_NETCAT_FLUSH_INTERVAL  netcat 批量写最大延迟，默认 200ms（如 1s）
+#   GOFLOW2_NETCAT_WRITE_BUFFER    netcat 每目标写缓冲大小，默认 65536（如 131072）
+#   GOFLOW2_TEMPLATES_TTL          NetFlow/IPFIX 模板 TTL，默认 0＝永不过期；长期运行建议 1h
+#   GOFLOW2_SAMPLING_TTL           采样率 TTL，默认 0＝永不过期；长期运行建议 1h
 #   GOFLOW2_MAPPING         mapping.yaml 路径
 #   GOFLOW2_LOGLEVEL        日志级别，默认 info
 #   GOFLOW2_PID_FILE        pid 文件路径
@@ -33,6 +41,9 @@
 #     GOFLOW2_DEVICE_STATS_PATH       统计端点前缀，默认 /device-stats
 #     GOFLOW2_DEVICE_RETENTION_HOURLY 小时桶保留时长，默认 72h
 #     GOFLOW2_DEVICE_RETENTION_DAILY  日桶保留时长，默认 2160h（90 天）
+#     GOFLOW2_QUEUE_STATS_PATH        接收队列监控端点路径，默认 /queue-stats
+#     GOFLOW2_TRANSPORT_STATS_PATH    发送队列监控端点路径，默认 /transport-stats
+#     GOFLOW2_WEB_PATH                Web 面板路径，默认 /ui（置空禁用）
 #   日志（可选，默认 flow→stdout、slog→stderr，不重定向）
 #     GOFLOW2_LOG_PATH       额外写一份到该文件（-log.file，带大小轮转）
 #     GOFLOW2_LOG_ALSO_STDERR 设了 GOFLOW2_LOG_PATH 时仍镜像到 stderr (1/true)
@@ -81,7 +92,24 @@ _modify_query() {
     echo "$addr"
 }
 
-if [[ -n "${GOFLOW2_COUNT:-}" || -n "${GOFLOW2_WORKERS:-}" ]]; then
+# 修改 URL query：追加或覆写布尔参数（值可为 true/false/1/0）
+_modify_query_bool() {
+    local addr="$1" param="$2" val="$3"
+    local pattern="([?&])${param}=[^&]*"
+    if [[ "$addr" =~ $pattern ]]; then
+        # 已有该参数 → 覆写值
+        addr="${addr%%${BASH_REMATCH[0]}*}${BASH_REMATCH[1]}${param}=${val}${addr#*${BASH_REMATCH[0]}}"
+    elif [[ "$addr" == *"?"* ]]; then
+        # 有其他 query 参数 → 追加
+        addr="${addr}&${param}=${val}"
+    else
+        # 无 query → 新增
+        addr="${addr}?${param}=${val}"
+    fi
+    echo "$addr"
+}
+
+if [[ -n "${GOFLOW2_COUNT:-}" || -n "${GOFLOW2_WORKERS:-}" || -n "${GOFLOW2_QUEUE_SIZE:-}" || -n "${GOFLOW2_BLOCKING:-}" ]]; then
     parts=""
     IFS=',' read -ra addrs <<< "$LISTEN"
     for addr in "${addrs[@]}"; do
@@ -90,6 +118,12 @@ if [[ -n "${GOFLOW2_COUNT:-}" || -n "${GOFLOW2_WORKERS:-}" ]]; then
         fi
         if [[ -n "${GOFLOW2_WORKERS:-}" ]]; then
             addr="$(_modify_query "$addr" "workers" "$GOFLOW2_WORKERS")"
+        fi
+        if [[ -n "${GOFLOW2_QUEUE_SIZE:-}" ]]; then
+            addr="$(_modify_query "$addr" "queue_size" "$GOFLOW2_QUEUE_SIZE")"
+        fi
+        if [[ -n "${GOFLOW2_BLOCKING:-}" ]]; then
+            addr="$(_modify_query_bool "$addr" "blocking" "$GOFLOW2_BLOCKING")"
         fi
         parts="${parts}${parts:+,}${addr}"
     done
@@ -168,6 +202,8 @@ _build_transport_args() {
         _t_append "-transport.netcat.reconnect.interval" "${GOFLOW2_NETCAT_RECONNECT_INTERVAL:-}"
         _t_append "-transport.netcat.queue"              "${GOFLOW2_NETCAT_QUEUE:-}"
         _t_bool  "-transport.netcat.drop"                "${GOFLOW2_NETCAT_DROP:-}"
+        _t_append "-transport.netcat.flush.interval"     "${GOFLOW2_NETCAT_FLUSH_INTERVAL:-}"
+        _t_append "-transport.netcat.write.buffer"       "${GOFLOW2_NETCAT_WRITE_BUFFER:-}"
     fi
     echo "$args"
 }
@@ -187,6 +223,45 @@ _build_device_stats_args() {
     if [[ -n "${GOFLOW2_QUEUE_STATS_PATH:-}" ]]; then
         args="${args} -queue.stats.path ${GOFLOW2_QUEUE_STATS_PATH}"
     fi
+    if [[ -n "${GOFLOW2_TRANSPORT_STATS_PATH:-}" ]]; then
+        args="${args} -transport.stats.path ${GOFLOW2_TRANSPORT_STATS_PATH}"
+    fi
+    if [[ -n "${GOFLOW2_WEB_PATH:-}" ]]; then
+        args="${args} -web.path ${GOFLOW2_WEB_PATH}"
+    fi
+    case "${GOFLOW2_METRICS:-}" in
+        1|true)  args="${args} -metrics" ;;
+        0|false) args="${args} -metrics=false" ;;
+        "")      ;; # 未设置 → 跳过（默认开启）
+        *)       args="${args} -metrics=${GOFLOW2_METRICS}" ;;
+    esac
+    case "${GOFLOW2_PPROF:-}" in
+        1|true)  args="${args} -pprof" ;;
+        0|false) args="${args} -pprof=false" ;;
+        "")      ;; # 未设置 → 跳过（默认关闭）
+        *)       args="${args} -pprof=${GOFLOW2_PPROF}" ;;
+    esac
+    # 模板/采样率 TTL：不设则沿用 goflow2 默认值 0，即"永不过期"。
+    # 长期运行建议设为 1h（模板标准刷新周期 60s，留足余量），
+    # 否则模板条目会随设备/观测域增长持续累积，并放大模板查询的锁竞争。
+    if [[ -n "${GOFLOW2_TEMPLATES_TTL:-}" ]]; then
+        args="${args} -templates.ttl ${GOFLOW2_TEMPLATES_TTL}"
+    fi
+    case "${GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS:-}" in
+        1|true)  args="${args} -templates.ttl.extend-on-access" ;;
+        0|false) args="${args} -templates.ttl.extend-on-access=false" ;;
+        "")      ;; # 未设置 → 跳过（默认关闭）
+        *)       args="${args} -templates.ttl.extend-on-access=${GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS}" ;;
+    esac
+    if [[ -n "${GOFLOW2_SAMPLING_TTL:-}" ]]; then
+        args="${args} -sampling.ttl ${GOFLOW2_SAMPLING_TTL}"
+    fi
+    case "${GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS:-}" in
+        1|true)  args="${args} -sampling.ttl.extend-on-access" ;;
+        0|false) args="${args} -sampling.ttl.extend-on-access=false" ;;
+        "")      ;; # 未设置 → 跳过（默认关闭）
+        *)       args="${args} -sampling.ttl.extend-on-access=${GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS}" ;;
+    esac
     echo "$args"
 }
 
@@ -257,8 +332,16 @@ do_start() {
     if [[ -n "${GOFLOW2_WORKERS:-}" ]]; then
         echo "    workers: $GOFLOW2_WORKERS (per listen address)"
     fi
+    if [[ -n "${GOFLOW2_QUEUE_SIZE:-}" ]]; then
+        echo "    queue_size: $GOFLOW2_QUEUE_SIZE (per listen address)"
+    fi
+    if [[ -n "${GOFLOW2_BLOCKING:-}" ]]; then
+        echo "    blocking : $GOFLOW2_BLOCKING (per listen address)"
+    fi
     echo "    format : $FORMAT"
     echo "    transport: $TRANSPORT"
+    echo "    metrics  : ${GOFLOW2_METRICS:-true}"
+    echo "    pprof    : ${GOFLOW2_PPROF:-false}"
     local KAFKA_ARGS=""
     if [[ "$TRANSPORT" == "kafka" ]]; then
         KAFKA_ARGS="$(_build_kafka_args)"
@@ -379,8 +462,11 @@ usage() {
     echo "  GOFLOW2_LISTEN     监听地址 (default sflow://:6343,netflow://:2055)"
     echo "  GOFLOW2_COUNT      UDP socket 数：每个监听地址 socket 数（追加 ?count=N，默认无）"
     echo "  GOFLOW2_WORKERS    解码并行度：每个监听地址 worker 数（追加 ?workers=N，默认无）"
+    echo "  GOFLOW2_QUEUE_SIZE 接收队列容量：每个监听地址队列长度（追加 ?queue_size=N，默认无）"
+    echo "  GOFLOW2_BLOCKING   同步阻塞接收：每个监听地址 ?blocking=true/false（true 时不丢包、队列容量失效，默认无）"
     echo "  GOFLOW2_FORMAT     输出格式 (default json)"
     echo "  GOFLOW2_TRANSPORT  传输方式 (default file)"
+    echo "  GOFLOW2_METRICS    全局统计开关：0/false 关闭全部指标 (default true)"
     echo "  GOFLOW2_MAPPING    mapping.yaml 路径"
     echo "  GOFLOW2_LOGLEVEL   日志级别 (default info)"
     echo "  GOFLOW2_PID_FILE   pid 文件路径"
@@ -388,6 +474,8 @@ usage() {
     echo "  GOFLOW2_DEVICE_RETENTION_HOURLY 小时桶保留时长 (default 72h)"
     echo "  GOFLOW2_DEVICE_RETENTION_DAILY  日桶保留时长 (default 2160h=90天)
   GOFLOW2_QUEUE_STATS_PATH        队列监控端点路径 (default /queue-stats)"
+    echo "  GOFLOW2_TRANSPORT_STATS_PATH    发送队列监控端点路径 (default /transport-stats)"
+    echo "  GOFLOW2_WEB_PATH                Web 面板路径 (default /ui)"
     echo "  GOFLOW2_LOG_PATH      额外日志文件（-log.file，带大小轮转）"
     echo "  GOFLOW2_LOG_ALSO_STDERR 设了 LOG_PATH 时同时输出 stderr (1/true)"
     echo "  GOFLOW2_LOG_SOURCE    日志附 source (1/true)"

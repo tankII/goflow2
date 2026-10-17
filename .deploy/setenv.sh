@@ -18,6 +18,15 @@
 # 每个监听地址的解码并行 worker 数；留空时保持 goflow2 原始默认（= count*2）
 # [[ -z "${GOFLOW2_WORKERS:-}" ]] && export GOFLOW2_WORKERS=4
 
+# 每个监听地址的接收队列容量（每包约占 9KB，容量×9KB ≈ 内存占用）；
+# 留空时保持 goflow2 原始默认：非阻塞时 1000000（≈9GB，注意 OOM）、blocking 时 0
+# [[ -z "${GOFLOW2_QUEUE_SIZE:-}" ]] && export GOFLOW2_QUEUE_SIZE=100000
+
+# 每个监听地址是否同步阻塞接收：1/true 开启，0/false 关闭。
+# 开启后不丢包，但接收协程会阻塞，且 queue_size 失效（同步模式容量恒 0）。
+# 留空＝不传该参数（goflow2 默认非阻塞、满则丢）
+# [[ -z "${GOFLOW2_BLOCKING:-}" ]] && export GOFLOW2_BLOCKING=1
+
 # 输出格式：json | csv | text | bin
 # [[ -z "${GOFLOW2_FORMAT:-}" ]] && export GOFLOW2_FORMAT=json
 
@@ -27,6 +36,11 @@
 # 字段映射 YAML
 # [[ -z "${GOFLOW2_MAPPING:-}" ]] && export GOFLOW2_MAPPING="/path/to/mapping.yaml"
 
+# 时区（全局）：影响时间字段渲染（mapping.render 的 datetime/datetimenano）
+# 与 /device-stats 按小时/按天分桶。默认 UTC；设了 TZ 则用本地时间。
+# 未显式指定时默认使用本地时区；调用方已设 TZ 时以调用方为准。
+[[ -z "${TZ:-}" ]] && export TZ=Asia/Shanghai
+
 # HTTP 状态端口
 # [[ -z "${GOFLOW2_ADDR:-}" ]] && export GOFLOW2_ADDR=:18080
 
@@ -35,6 +49,29 @@
 
 # pid 文件路径（默认位于 logs/ 下）
 # [[ -z "${GOFLOW2_PID_FILE:-}" ]] && export GOFLOW2_PID_FILE=/var/run/goflow2.pid
+
+# ── 全局统计开关（可选，默认开启）─────────────────────────────
+# 关闭后：不发射任何 Prometheus 指标（-metrics=false）、不做设备统计聚合；
+# /device-list、<前缀>/hourly、<前缀>/daily 仍返回 200 但为空数据；
+# 接收队列 /queue-stats、发送队列 /transport-stats 与 /ui 面板照常。
+# [[ -z "${GOFLOW2_METRICS:-}" ]] && export GOFLOW2_METRICS=0
+
+# ── 性能剖析端点（可选，默认关闭）──────────────────────────────
+# 开启后在状态端口（-addr，默认 :18080）暴露 /debug/pprof/（CPU、heap、
+# goroutine 等），用于排查吞吐/CPU 问题；端点无鉴权，仅排查期间开启，用完关闭。
+# [[ -z "${GOFLOW2_PPROF:-}" ]] && export GOFLOW2_PPROF=1
+
+# ── 模板 / 采样率 TTL（可选，默认 0＝永不过期）──────────────────
+# 不设置时 goflow2 默认 templates.ttl=0、sampling.ttl=0，即模板与采样率条目
+# 永不清理：长期运行会随「设备数 × 观测域 × 模板 ID」持续累积，并放大模板查询
+# 的锁竞争（表现为跑久了 CPU 逐步上升、flow_process_nf_template_entries 单调增长）。
+# NetFlow v9 / IPFIX 模板的标准刷新周期为 60s，建议设为 1h，留足余量。
+# 取值过小会反复丢失模板并触发 fallback 解码，请勿低于刷新周期。
+# [[ -z "${GOFLOW2_TEMPLATES_TTL:-}" ]] && export GOFLOW2_TEMPLATES_TTL=1h
+# [[ -z "${GOFLOW2_SAMPLING_TTL:-}" ]] && export GOFLOW2_SAMPLING_TTL=1h
+# 访问模板时是否续期（默认关闭）。长连接且模板持续刷新的场景可开启。
+# [[ -z "${GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS=1
+# [[ -z "${GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS=1
 
 # ── 设备统计参数（可选，均有默认值，可不设则使用默认）───────────
 # 统计端点前缀，默认 /device-stats（实际的 3 个端点：/device-list、
@@ -93,6 +130,13 @@
 # [[ -z "${GOFLOW2_NETCAT_QUEUE:-}" ]] && export GOFLOW2_NETCAT_QUEUE=1024
 # [[ -z "${GOFLOW2_NETCAT_DROP:-}" ]] && export GOFLOW2_NETCAT_DROP=1
 
+# 批量写：记录先累积进写缓冲，缓冲写满或到达该间隔才下发给 socket，
+# 从而把"每条记录一次 write 系统调用"合并为"每 64KiB 一次"。
+# 延迟上限默认 200ms；下游为 flume/HDFS 等汇聚链路时可放宽到 1s 以上。
+# 每目标写缓冲大小，默认 65536（字节）。
+# [[ -z "${GOFLOW2_NETCAT_FLUSH_INTERVAL:-}" ]] && export GOFLOW2_NETCAT_FLUSH_INTERVAL=200ms
+# [[ -z "${GOFLOW2_NETCAT_WRITE_BUFFER:-}" ]] && export GOFLOW2_NETCAT_WRITE_BUFFER=65536
+
 # ── Kafka 传输参数（TRANSPORT=kafka 时生效）──────────────────────
 # 注意：GOFLOW2_TRANSPORT 需先设为 kafka 才会启用以下配置。
 # 布尔值用 1 或 true 表示开启；留空或不设表示不传递该参数（使用 goflow2 默认值）。
@@ -131,3 +175,9 @@
 # [[ -z "${GOFLOW2_KAFKA_TLS_INSECURE:-}" ]] && export GOFLOW2_KAFKA_TLS_INSECURE=1
 # 队列监控端点路径（默认 /queue-stats）
 # [[ -z "${GOFLOW2_QUEUE_STATS_PATH:-}" ]] && export GOFLOW2_QUEUE_STATS_PATH=/queue-stats
+
+# 发送队列监控端点路径（默认 /transport-stats；仅 netcat 传输有数据）
+# [[ -z "${GOFLOW2_TRANSPORT_STATS_PATH:-}" ]] && export GOFLOW2_TRANSPORT_STATS_PATH=/transport-stats
+
+# Web 监控面板路径（默认 /ui；置空则禁用它）
+# [[ -z "${GOFLOW2_WEB_PATH:-}" ]] && export GOFLOW2_WEB_PATH=/ui
