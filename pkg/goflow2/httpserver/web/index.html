@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GoFlow2 采集器控制台</title>
+<style>
+  :root{
+    color-scheme: light;
+    --bg:#e9edf0; --panel:#fbfcfd; --panel2:#eef2f4;
+    --ink:#12171b; --muted:#5b6570;
+    --rule:#c8d0d6; --rule-strong:#aab4bc;
+    --accent:#0b6b52; --ok:#0b6b52; --warn:#8a5a00; --err:#b3261e;
+    --packets:#17607a; --flows:#0b6b52;
+    --mono: ui-monospace, "SFMono-Regular", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:13px; line-height:1.45; }
+  h1{ font-size:15px; margin:0; font-weight:650; letter-spacing:-.01em; }
+  .mono{ font-family:var(--mono); }
+  .num{ font-family:var(--mono); font-variant-numeric:tabular-nums; text-align:right; }
+  .muted{ color:var(--muted); }
+  .spacer{ flex:1; }
+
+  header{ position:sticky; top:0; z-index:6; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+          padding:10px 16px; background:var(--panel); border-bottom:2px solid var(--ink); }
+  .brand{ display:flex; align-items:baseline; gap:10px; }
+  .brand .sub{ font-size:11px; color:var(--muted); letter-spacing:.04em; }
+  .signal{ width:9px; height:9px; border-radius:50%; background:var(--muted); display:inline-block; vertical-align:middle; margin-right:6px; }
+  .signal.ok{ background:var(--ok); box-shadow:0 0 0 3px rgba(11,107,82,.18); }
+  .signal.err{ background:var(--err); } .signal.warn{ background:var(--warn); }
+  #health{ font-size:12px; color:var(--muted); white-space:nowrap; }
+  .readouts{ display:flex; gap:14px; }
+  .readout{ font-size:12px; color:var(--muted); white-space:nowrap; }
+  .readout b{ font-family:var(--mono); color:var(--ink); font-weight:600; margin-left:6px; }
+  .links a{ color:var(--accent); text-decoration:none; margin-right:12px; font-size:12px; }
+  .links a:hover{ text-decoration:underline; }
+  .toolbar{ display:flex; align-items:center; gap:8px; }
+
+  select, button{ font-family:inherit; font-size:12px; color:var(--ink); background:var(--panel);
+                  border:1px solid var(--rule-strong); border-radius:2px; padding:4px 9px; }
+  button{ cursor:pointer; }
+  button:hover{ border-color:var(--ink); }
+  button:disabled{ opacity:.45; cursor:default; border-color:var(--rule); }
+  :focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+
+  main{ padding:14px 16px 40px; display:grid; gap:14px; max-width:1400px; margin:0 auto; }
+  .panels{ display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(360px,1fr)); }
+
+  .panel{ background:var(--panel); border:1px solid var(--rule); border-radius:2px; overflow:hidden; }
+  .panel-head{ display:flex; align-items:center; gap:8px; padding:9px 14px; border-bottom:1px solid var(--rule); }
+  .panel-head::before{ content:""; width:3px; height:13px; background:var(--accent); display:inline-block; }
+  .panel-head > span:first-of-type{ font-weight:600; font-size:13px; }
+  .panel-note{ margin-left:auto; font-size:11px; }
+
+  table{ width:100%; border-collapse:collapse; }
+  th,td{ text-align:left; padding:6px 14px; border-bottom:1px solid var(--rule); white-space:nowrap; }
+  th{ color:var(--muted); font-weight:500; font-size:11px; }
+  tbody tr:last-child td{ border-bottom:none; }
+  tbody tr.clickable{ cursor:pointer; }
+  tbody tr.clickable:hover{ background:var(--panel2); }
+  tbody tr.clickable:hover td:first-child{ box-shadow:inset 3px 0 0 var(--accent); }
+  tbody tr.selected{ background:var(--panel2); }
+  tbody tr.selected td:first-child{ box-shadow:inset 3px 0 0 var(--accent); }
+  .empty{ padding:12px 14px; color:var(--muted); }
+
+  .led{ display:inline-flex; gap:2px; align-items:center; }
+  .led-seg{ width:7px; height:12px; border-radius:1px; background:#d7dee3; }
+  .led-seg.on{ background:var(--ok); } .led-seg.on.warn{ background:var(--warn); } .led-seg.on.err{ background:var(--err); }
+
+  .chips{ display:flex; flex-wrap:wrap; gap:6px; padding:12px 14px; }
+  .chip{ display:inline-flex; align-items:center; gap:6px; padding:2px 4px 2px 8px; border:1px solid var(--rule); border-radius:2px; background:var(--panel2); font-size:12px; }
+  .chip-name{ font-family:var(--mono); }
+  .chip-kind{ font-size:10px; line-height:1.5; padding:0 5px; border-radius:2px; color:#fff; }
+  .kind-native{ background:var(--muted); } .kind-renamed{ background:var(--accent); }
+  .kind-literal{ background:var(--warn); } .kind-virtual{ background:var(--flows); }
+
+  .overlay{ position:fixed; inset:0; background:rgba(18,23,27,.32); opacity:0; pointer-events:none; transition:opacity .15s ease; z-index:8; }
+  .overlay.open{ opacity:1; pointer-events:auto; }
+  .drawer{ position:fixed; top:0; right:0; height:100%; width:min(720px,100%); background:var(--panel);
+           border-left:2px solid var(--ink); transform:translateX(100%); transition:transform .15s ease; z-index:9;
+           display:flex; flex-direction:column; }
+  .drawer.open{ transform:none; }
+  .drawer-head{ display:flex; align-items:flex-start; gap:12px; padding:12px 16px; border-bottom:1px solid var(--rule); }
+  .drawer-head h3{ font-size:15px; margin:0 0 3px; font-family:var(--mono); }
+  .drawer-head .muted{ font-size:12px; }
+  .drawer-body{ padding:12px 16px 40px; overflow:auto; }
+  .drawer-tools{ display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  .seg{ display:inline-flex; border:1px solid var(--rule-strong); border-radius:2px; overflow:hidden; }
+  .seg-btn{ border:none; border-right:1px solid var(--rule-strong); border-radius:0; background:var(--panel); padding:4px 12px; }
+  .seg-btn:last-child{ border-right:none; }
+  .seg-btn.active{ background:var(--ink); color:#fff; border-color:var(--ink); }
+
+  .chart-box{ border:1px solid var(--rule); border-radius:2px; padding:10px 12px; background:var(--panel); }
+  .chart-head{ display:flex; gap:18px; margin-bottom:8px; }
+  .legend{ display:inline-flex; align-items:center; gap:6px; font-size:12px; }
+  .legend .sw{ width:10px; height:10px; border-radius:2px; display:inline-block; }
+  .legend-peak{ color:var(--muted); font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .chart-rows{ display:grid; gap:8px; }
+  .chart-row{ display:grid; grid-template-columns:54px 1fr; align-items:center; gap:8px; }
+  .chart-row .rlabel{ font-size:11px; color:var(--muted); font-family:var(--mono); text-align:right; }
+  .chart-row svg{ display:block; width:100%; height:78px; }
+  .hit{ cursor:crosshair; }
+  .detail{ margin-top:12px; border:1px solid var(--rule); border-radius:2px; max-height:260px; overflow:auto; }
+  .detail thead th{ position:sticky; top:0; background:var(--panel); }
+
+  @media (prefers-reduced-motion: reduce){ *{ transition:none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><h1>GoFlow2 采集器控制台</h1><span class="sub">flow collector</span></div>
+  <span id="health" class="muted"></span>
+  <div class="spacer"></div>
+  <div class="readouts">
+    <span class="readout">传输<b id="transport">—</b></span>
+    <span class="readout">格式<b id="format">—</b></span>
+  </div>
+  <button id="fields-toggle">字段 (0)</button>
+  <div class="links" id="links"></div>
+  <div class="toolbar">
+    <span id="updated" class="muted"></span>
+    <select id="interval">
+      <option value="5000" selected>5s</option>
+      <option value="10000">10s</option>
+      <option value="30000">30s</option>
+      <option value="0">暂停</option>
+    </select>
+    <button id="refresh">刷新</button>
+  </div>
+</header>
+<main>
+  <section class="panel" id="flowfields" hidden>
+    <div class="panel-head"><span>输出字段</span><span class="panel-note muted">flow 记录输出列</span></div>
+    <div id="fields"></div>
+  </section>
+  <div class="panels">
+    <section class="panel">
+      <div class="panel-head"><span>接收队列</span><span class="panel-note muted">listener dispatch</span></div>
+      <div id="queues"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><span>发送队列</span><span class="panel-note muted">netcat targets</span></div>
+      <div id="targets"></div>
+    </section>
+  </div>
+  <section class="panel">
+    <div class="panel-head"><span>设备统计</span><span class="panel-note muted">点击行查看按小时 / 按日</span></div>
+    <div id="devices"></div>
+  </section>
+</main>
+
+<div id="overlay" class="overlay"></div>
+<aside id="drawer" class="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div>
+      <h3 id="drawer-ip">—</h3>
+      <div id="drawer-meta" class="muted"></div>
+    </div>
+    <div class="spacer"></div>
+    <button id="drawer-refresh">刷新</button>
+    <button id="drawer-close">关闭</button>
+  </div>
+  <div id="drawer-body" class="drawer-body"></div>
+</aside>
+
+<script id="cfg" type="application/json">__GOFLOW2_CONFIG__</script>
+<script>
+"use strict";
+var CFG = JSON.parse(document.getElementById("cfg").textContent);
+var timer = null;
+var selected = null;
+var activeTab = "hourly";
+var chartStyle = "bar";
+var drawerCache = null;
+
+function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+function esc(v) { return v === undefined || v === null ? "" : String(v); }
+function clamp(v) { return Math.max(0, Math.min(1, Number(v) || 0)); }
+function pct(v) { return (clamp(v) * 100).toFixed(1) + "%"; }
+function maxOf(arr, key) { return arr.reduce(function (m, x) { return Math.max(m, Number(x[key]) || 0); }, 0); }
+
+function getJSON(url) {
+  return fetch(url, { headers: { "Accept": "application/json" }, cache: "no-store" }).then(function (r) {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  });
+}
+
+function renderTable(container, columns, rows, rowFn, emptyMsg) {
+  container.textContent = "";
+  if (!rows || rows.length === 0) { container.appendChild(el("div", "empty", emptyMsg || "无数据")); return; }
+  var t = el("table");
+  var thead = el("thead"), tr = el("tr");
+  columns.forEach(function (c) { tr.appendChild(el("th", c.num ? "num" : "", c.label)); });
+  thead.appendChild(tr); t.appendChild(thead);
+  var tb = el("tbody");
+  rows.forEach(function (r) { tb.appendChild(rowFn(r)); });
+  t.appendChild(tb); container.appendChild(t);
+}
+
+function utilization(depth, capacity) {
+  var c = Number(capacity) || 0;
+  if (c <= 0) return 0;
+  return clamp((Number(depth) || 0) / c);
+}
+
+function ledBar(v) {
+  var td = el("td");
+  var wrap = el("div", "led");
+  var n = 12, on = Math.round(clamp(v) * n);
+  var lvl = v >= 0.9 ? "err" : v >= 0.7 ? "warn" : "ok";
+  for (var i = 0; i < n; i++) {
+    wrap.appendChild(el("span", "led-seg" + (i < on ? " on " + lvl : "")));
+  }
+  td.appendChild(wrap);
+  return td;
+}
+
+function renderQueues(data) {
+  renderTable(document.getElementById("queues"),
+    [{ label: "协议" }, { label: "地址" }, { label: "深度", num: true }, { label: "容量", num: true }, { label: "使用率", num: true }, { label: "占用" }],
+    data, function (q) {
+      var tr = el("tr");
+      var util = utilization(q.depth, q.capacity);
+      tr.appendChild(el("td", "", esc(q.scheme)));
+      tr.appendChild(el("td", "mono", esc(q.hostname || "*") + ":" + esc(q.port)));
+      tr.appendChild(el("td", "num", esc(q.depth)));
+      tr.appendChild(el("td", "num", esc(q.capacity)));
+      tr.appendChild(el("td", "num", pct(util)));
+      tr.appendChild(ledBar(util));
+      return tr;
+    });
+}
+
+function renderTargets(data) {
+  renderTable(document.getElementById("targets"),
+    [{ label: "地址" }, { label: "状态" }, { label: "策略" }, { label: "深度", num: true }, { label: "容量", num: true }, { label: "使用率", num: true }, { label: "丢弃", num: true }, { label: "占用" }],
+    data, function (t) {
+      var tr = el("tr");
+      tr.appendChild(el("td", "mono", esc(t.addr)));
+      var state = el("td");
+      state.appendChild(el("span", "signal " + (t.connected ? "ok" : "warn")));
+      state.appendChild(document.createTextNode(t.connected ? "已连接" : "重连中"));
+      tr.appendChild(state);
+      tr.appendChild(el("td", "muted", t.drop ? "丢弃" : "阻塞"));
+      tr.appendChild(el("td", "num", esc(t.depth)));
+      tr.appendChild(el("td", "num", esc(t.capacity)));
+      tr.appendChild(el("td", "num", pct(utilization(t.depth, t.capacity))));
+      tr.appendChild(el("td", "num", esc(t.dropped)));
+      tr.appendChild(ledBar(utilization(t.depth, t.capacity)));
+      return tr;
+    });
+}
+
+function renderDevices(data) {
+  renderTable(document.getElementById("devices"),
+    [{ label: "设备" }, { label: "最后活跃" }, { label: "报文", num: true }, { label: "flow", num: true }],
+    data, function (d) {
+      var tr = el("tr", "clickable" + (d.router === selected ? " selected" : ""));
+      tr.appendChild(el("td", "mono", esc(d.router)));
+      tr.appendChild(el("td", "muted mono", esc(d.last_seen)));
+      tr.appendChild(el("td", "num", esc(d.total_packets)));
+      tr.appendChild(el("td", "num", esc(d.total_flows)));
+      tr.addEventListener("click", function () { openDrawer(d); });
+      return tr;
+    });
+}
+
+function refreshDevices() {
+  if (!CFG.deviceListPath) { renderTable(document.getElementById("devices"), [], [], null, "设备统计未启用"); return; }
+  getJSON(CFG.deviceListPath).then(renderDevices).catch(function () { renderUnavailable("devices", "无法读取设备列表，稍后重试。"); });
+}
+
+function openDrawer(device) {
+  selected = device.router;
+  document.getElementById("drawer-ip").textContent = device.router;
+  var meta = [];
+  if (device.last_seen) meta.push("最后活跃 " + device.last_seen);
+  if (device.total_packets !== undefined) meta.push("报文 " + device.total_packets);
+  if (device.total_flows !== undefined) meta.push("flow " + device.total_flows);
+  document.getElementById("drawer-meta").textContent = meta.join("    ");
+  document.getElementById("overlay").classList.add("open");
+  document.getElementById("drawer").classList.add("open");
+  document.getElementById("drawer").setAttribute("aria-hidden", "false");
+  loadDrawer(device.router);
+}
+
+function closeDrawer() {
+  selected = null;
+  drawerCache = null;
+  document.getElementById("overlay").classList.remove("open");
+  document.getElementById("drawer").classList.remove("open");
+  document.getElementById("drawer").setAttribute("aria-hidden", "true");
+  refreshDevices();
+}
+
+function loadDrawer(router) {
+  setBodyMessage("载入中…");
+  Promise.all([
+    getJSON(CFG.deviceStatsPath + "/hourly?router=" + encodeURIComponent(router)),
+    getJSON(CFG.deviceStatsPath + "/daily?router=" + encodeURIComponent(router))
+  ]).then(function (res) {
+    if (selected !== router) return;
+    drawerCache = { hourly: res[0], daily: res[1] };
+    renderDrawer();
+  }).catch(function (err) {
+    if (selected !== router) return;
+    drawerCache = null;
+    setBodyMessage("无法读取该设备的统计：" + err.message + "。可点“刷新”重试。");
+  });
+}
+
+function setBodyMessage(msg) {
+  var b = document.getElementById("drawer-body");
+  b.textContent = "";
+  b.appendChild(el("div", "empty", msg));
+}
+
+function segControl(options, active, onPick) {
+  var box = el("div", "seg");
+  box.setAttribute("role", "tablist");
+  options.forEach(function (o) {
+    var b = el("button", "seg-btn" + (o[0] === active ? " active" : ""), o[1]);
+    b.type = "button";
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", o[0] === active ? "true" : "false");
+    b.addEventListener("click", function () { onPick(o[0]); });
+    box.appendChild(b);
+  });
+  return box;
+}
+
+function renderDrawer() {
+  var b = document.getElementById("drawer-body");
+  b.textContent = "";
+  if (!drawerCache) { setBodyMessage("暂无数据"); return; }
+
+  var tools = el("div", "drawer-tools");
+  tools.appendChild(segControl([["hourly", "按小时"], ["daily", "按日"]], activeTab, function (v) { activeTab = v; renderDrawer(); }));
+  tools.appendChild(el("div", "spacer"));
+  tools.appendChild(segControl([["bar", "柱图"], ["line", "折线"]], chartStyle, function (v) { chartStyle = v; renderDrawer(); }));
+  b.appendChild(tools);
+
+  var data = drawerCache[activeTab] || {};
+  var buckets = data.buckets || [];
+  if (buckets.length === 0) {
+    b.appendChild(el("div", "empty", activeTab === "hourly" ? "该设备暂无按小时记录。" : "该设备暂无按日记录。"));
+    return;
+  }
+  b.appendChild(combinedChart(buckets));
+  b.appendChild(detailTable(buckets));
+}
+
+function legendItem(color, label, peak) {
+  var s = el("span", "legend");
+  var sw = el("span", "sw"); sw.style.background = color; s.appendChild(sw);
+  s.appendChild(el("span", "", label));
+  s.appendChild(el("span", "legend-peak", "峰值 " + peak));
+  return s;
+}
+
+function combinedChart(buckets) {
+  var box = el("div", "chart-box");
+  var head = el("div", "chart-head");
+  head.appendChild(legendItem("var(--packets)", "报文", maxOf(buckets, "packets")));
+  head.appendChild(legendItem("var(--flows)", "flow", maxOf(buckets, "flows")));
+  box.appendChild(head);
+  // Each series gets its own row and its own vertical scale. Packets and flows
+  // often move in lock-step (a fixed number of records per datagram); plotting
+  // them on one normalized axis would make the two curves coincide, so they are
+  // kept as separate small multiples sharing the x-axis.
+  var rows = el("div", "chart-rows");
+  rows.appendChild(chartRow("报文", "packets", "var(--packets)", buckets));
+  rows.appendChild(chartRow("flow", "flows", "var(--flows)", buckets));
+  box.appendChild(rows);
+  return box;
+}
+
+function chartRow(label, key, color, buckets) {
+  var row = el("div", "chart-row");
+  row.appendChild(el("span", "rlabel", label));
+  var holder = el("div");
+  holder.innerHTML = seriesSVG(buckets, key, color, label, chartStyle);
+  row.appendChild(holder);
+  return row;
+}
+
+var ROW_H = 78;
+function hoverRects(buckets, step, h) {
+  var parts = [];
+  for (var i = 0; i < buckets.length; i++) {
+    parts.push('<rect class="hit" x="' + (i * step).toFixed(2) + '" y="0" width="' + Math.max(1, step).toFixed(2) + '" height="' + h + '" fill="transparent"><title>'
+      + esc(buckets[i].time) + "\n报文 " + esc(buckets[i].packets) + "\nflow " + esc(buckets[i].flows) + "</title></rect>");
+  }
+  return parts.join("");
+}
+
+function seriesSVG(buckets, key, color, label, style) {
+  var W = 600, H = ROW_H, n = buckets.length, step = W / n;
+  var max = maxOf(buckets, key);
+  var parts = [];
+  if (style === "line") {
+    var pts = [];
+    for (var i = 0; i < n; i++) {
+      var y = max <= 0 ? H : H - (Number(buckets[i][key]) || 0) / max * (H - 4);
+      pts.push((i * step + step / 2).toFixed(2) + "," + y.toFixed(2));
+    }
+    parts.push('<polyline fill="none" stroke="' + color + '" stroke-width="2" points="' + pts.join(" ") + '"/>');
+  } else {
+    for (var j = 0; j < n; j++) {
+      var h = max <= 0 ? 0 : (Number(buckets[j][key]) || 0) / max * (H - 4);
+      parts.push('<rect x="' + (j * step + 1).toFixed(2) + '" y="' + (H - h).toFixed(2) + '" width="' + Math.max(1, step - 2).toFixed(2) + '" height="' + h.toFixed(2) + '" fill="' + color + '"/>');
+    }
+  }
+  parts.push(hoverRects(buckets, step, H));
+  var aria = label + (style === "line" ? " 折线单序列图" : " 柱图单序列图");
+  return '<svg class="chart" viewBox="0 0 600 ' + H + '" preserveAspectRatio="none" role="img" aria-label="' + esc(aria) + '">' + parts.join("") + "</svg>";
+}
+
+function detailTable(buckets) {
+  var wrap = el("div", "detail");
+  var t = el("table");
+  var thead = el("thead"), tr = el("tr");
+  ["时间", "报文", "flow", "字节"].forEach(function (label, i) { tr.appendChild(el("th", i > 0 ? "num" : "", label)); });
+  thead.appendChild(tr); t.appendChild(thead);
+  var tb = el("tbody");
+  buckets.slice().reverse().forEach(function (b) {
+    var r = el("tr");
+    r.appendChild(el("td", "muted mono", esc(b.time)));
+    r.appendChild(el("td", "num", esc(b.packets)));
+    r.appendChild(el("td", "num", esc(b.flows)));
+    r.appendChild(el("td", "num", esc(b.bytes)));
+    tb.appendChild(r);
+  });
+  t.appendChild(tb); wrap.appendChild(t);
+  return wrap;
+}
+
+function renderUnavailable(id, msg) {
+  var c = document.getElementById(id);
+  c.textContent = "";
+  c.appendChild(el("div", "empty", msg));
+}
+
+function fieldKindLabel(kind) {
+  var map = { native: "原始", renamed: "重命名", literal: "常量", virtual: "虚拟" };
+  return map[kind] || kind || "未知";
+}
+
+function renderOverview() {
+  document.getElementById("transport").textContent = CFG.transport || "未设置";
+  document.getElementById("format").textContent = CFG.format || "未设置";
+  var btn = document.getElementById("fields-toggle");
+  var n = (CFG.flowFields || []).length;
+  btn.textContent = "字段 (" + n + ")";
+  btn.disabled = n === 0;
+}
+
+function renderFlowFields() {
+  var host = document.getElementById("fields");
+  host.textContent = "";
+  var fields = CFG.flowFields || [];
+  if (fields.length === 0) { host.appendChild(el("div", "empty", "无命名字段：raw producer 或未配置 mapping。")); return; }
+  var wrap = el("div", "chips");
+  fields.forEach(function (f) {
+    var chip = el("span", "chip");
+    chip.appendChild(el("span", "chip-name", esc(f.name)));
+    chip.appendChild(el("span", "chip-kind kind-" + esc(f.kind), fieldKindLabel(f.kind)));
+    if (f.source) chip.title = "原始字段：" + f.source;
+    wrap.appendChild(chip);
+  });
+  wrap.appendChild(el("span", "muted", fields.length + " 列"));
+  document.getElementById("fields").appendChild(wrap);
+}
+
+function refreshHealth() {
+  fetch(CFG.healthPath, { cache: "no-store" }).then(function (r) {
+    var h = document.getElementById("health"); h.textContent = "";
+    h.appendChild(el("span", "signal " + (r.ok ? "ok" : "err")));
+    h.appendChild(document.createTextNode(r.ok ? "运行中" : "异常 " + r.status));
+  }).catch(function () {
+    var h = document.getElementById("health"); h.textContent = "";
+    h.appendChild(el("span", "signal err")); h.appendChild(document.createTextNode("不可达"));
+  });
+}
+
+function refreshAll() {
+  refreshHealth();
+  if (CFG.queueStatsPath) {
+    getJSON(CFG.queueStatsPath).then(renderQueues).catch(function () { renderUnavailable("queues", "无法读取接收队列，稍后重试。"); });
+  } else { renderUnavailable("queues", "接收队列统计未启用。"); }
+  if (CFG.transportStatsPath) {
+    getJSON(CFG.transportStatsPath).then(renderTargets).catch(function () { renderUnavailable("targets", "无法读取发送队列，稍后重试。"); });
+  } else { renderUnavailable("targets", "当前传输不提供发送队列。仅 netcat 传输支持。"); }
+  refreshDevices();
+  document.getElementById("updated").textContent = "更新于 " + new Date().toLocaleTimeString();
+}
+
+function applyInterval() {
+  if (timer) { clearInterval(timer); timer = null; }
+  var ms = Number(document.getElementById("interval").value) || 0;
+  if (ms > 0 && !document.hidden) timer = setInterval(refreshAll, ms);
+}
+
+function buildLinks() {
+  var box = document.getElementById("links");
+  var links = [["指标 /metrics", CFG.metricsPath]];
+  if (CFG.storePath) links.push(["存储 /store", CFG.storePath]);
+  links.forEach(function (l) {
+    var a = el("a", "", l[0]); a.href = l[1]; a.target = "_blank"; a.rel = "noopener"; box.appendChild(a);
+  });
+}
+
+document.getElementById("refresh").addEventListener("click", refreshAll);
+document.getElementById("interval").addEventListener("change", applyInterval);
+document.getElementById("fields-toggle").addEventListener("click", function () {
+  var s = document.getElementById("flowfields");
+  s.hidden = !s.hidden;
+});
+document.getElementById("drawer-close").addEventListener("click", closeDrawer);
+document.getElementById("drawer-refresh").addEventListener("click", function () { if (selected) loadDrawer(selected); });
+document.getElementById("overlay").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", function (e) { if (e.key === "Escape" && selected) closeDrawer(); });
+document.addEventListener("visibilitychange", function () { applyInterval(); if (!document.hidden) refreshAll(); });
+
+buildLinks();
+renderOverview();
+renderFlowFields();
+refreshAll();
+applyInterval();
+</script>
+</body>
+</html>

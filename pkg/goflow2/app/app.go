@@ -16,6 +16,7 @@ import (
 	"github.com/netsampler/goflow2/v3/pkg/goflow2/httpserver"
 	"github.com/netsampler/goflow2/v3/pkg/goflow2/listen"
 	"github.com/netsampler/goflow2/v3/pkg/goflow2/logging"
+	protoproducer "github.com/netsampler/goflow2/v3/producer/proto"
 	"github.com/netsampler/goflow2/v3/utils/debug"
 	"github.com/netsampler/goflow2/v3/utils/store/persistence"
 	"github.com/netsampler/goflow2/v3/utils/store/samplingrate"
@@ -53,7 +54,10 @@ func New(cfg *config.Config) (*App, error) {
 		"format", cfg.Format,
 		"transport", cfg.Transport,
 		"produce", cfg.Produce,
+		"metrics", cfg.Metrics,
 		"device_stats_path", cfg.DeviceStatsPath,
+		"transport_stats_path", cfg.TransportStatsPath,
+		"web_path", cfg.WebPath,
 		"device_retention_hourly", cfg.DeviceHourlyTTL.String(),
 		"device_retention_daily", cfg.DeviceDailyTTL.String(),
 		"templates_ttl", cfg.TemplatesTTL.String(),
@@ -76,21 +80,28 @@ func New(cfg *config.Config) (*App, error) {
 		Interval: cfg.StoreJSONInterval,
 	})
 
-	samplingStore, err := persist.NewSamplingRateStore(
+	samplingOpts := []samplingrate.FlowStoreOption{
 		samplingrate.WithTTL(cfg.SamplingRatesTTL),
 		samplingrate.WithExtendOnAccess(cfg.SamplingRatesExtendOnAccess),
 		samplingrate.WithSweepInterval(cfg.SamplingRatesSweepInterval),
-		samplingrate.WithHooks(metrics.SamplingRateStoreHooks()),
-	)
+	}
+	if cfg.Metrics {
+		samplingOpts = append(samplingOpts, samplingrate.WithHooks(metrics.SamplingRateStoreHooks()))
+	}
+	samplingStore, err := persist.NewSamplingRateStore(samplingOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("app: init sampling persistence: %w", err)
 	}
-	templateStore, err := persist.NewTemplateStore(
+
+	templateOpts := []templates.FlowStoreOption{
 		templates.WithTTL(cfg.TemplatesTTL),
 		templates.WithExtendOnAccess(cfg.TemplatesExtendOnAccess),
 		templates.WithSweepInterval(cfg.TemplatesSweepInterval),
-		templates.WithHooks(metrics.TemplateStoreHooks()),
-	)
+	}
+	if cfg.Metrics {
+		templateOpts = append(templateOpts, templates.WithHooks(metrics.TemplateStoreHooks()))
+	}
+	templateStore, err := persist.NewTemplateStore(templateOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("app: init template persistence: %w", err)
 	}
@@ -100,7 +111,19 @@ func New(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("app: build producer: %w", err)
 	}
 
-	deviceRC := metrics.NewRouterCounter(cfg.DeviceHourlyTTL, cfg.DeviceDailyTTL)
+	var flowFields []protoproducer.FlowField
+	if fp, ok := flowProducer.(interface {
+		Fields() []protoproducer.FlowField
+	}); ok {
+		flowFields = fp.Fields()
+	}
+
+	// deviceRC is nil when metrics are disabled, which turns the Prometheus
+	// wrappers into no-ops and keeps the device endpoints empty.
+	var deviceRC *metrics.RouterCounter
+	if cfg.Metrics {
+		deviceRC = metrics.NewRouterCounter(cfg.DeviceHourlyTTL, cfg.DeviceDailyTTL)
+	}
 
 	flowProducer = debug.WrapPanicProducer(flowProducer)
 	flowProducer = metrics.WrapPromProducer(flowProducer, deviceRC)
@@ -138,13 +161,20 @@ func New(cfg *config.Config) (*App, error) {
 
 	if cfg.Addr != "" {
 		mux := httpserver.New(httpserver.Config{
-			Addr:             cfg.Addr,
-			StoreHTTPPath:    cfg.StoreHTTPPath,
-			DeviceStatsPath:  cfg.DeviceStatsPath,
-			QueueStatsPath:   cfg.QueueStatsPath,
-			RouterCounter:    deviceRC,
-			QueueStatsSource: coll.QueueStats,
-			LogHTTP:          cfg.Logging.HTTP,
+			Addr:                 cfg.Addr,
+			StoreHTTPPath:        cfg.StoreHTTPPath,
+			DeviceStatsPath:      cfg.DeviceStatsPath,
+			QueueStatsPath:       cfg.QueueStatsPath,
+			TransportStatsPath:   cfg.TransportStatsPath,
+			WebPath:              cfg.WebPath,
+			Transport:            cfg.Transport,
+			Format:               cfg.Format,
+			FlowFields:           flowFields,
+			RouterCounter:        deviceRC,
+			QueueStatsSource:     coll.QueueStats,
+			TransportStatsSource: transporter.StatsSource(),
+			LogHTTP:              cfg.Logging.HTTP,
+			Pprof:                cfg.Pprof,
 		}, persist.Document, app.collecting.Load)
 		app.server = &http.Server{
 			Addr:              cfg.Addr,

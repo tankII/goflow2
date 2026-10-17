@@ -17,6 +17,59 @@ type ProtoProducer struct {
 	samplingStore samplingrate.Store
 }
 
+// FlowField describes one output column produced by the mapping formatter.
+type FlowField struct {
+	// Name is the output name (post-rename) used in the emitted record.
+	Name string `json:"name"`
+	// Kind classifies the origin of the field.
+	Kind string `json:"kind"`
+	// Source is the original mapping key when Name was renamed.
+	Source string `json:"source,omitempty"`
+}
+
+// FlowField kinds.
+const (
+	FlowFieldNative  = "native"
+	FlowFieldRenamed = "renamed"
+	FlowFieldLiteral = "literal"
+	FlowFieldVirtual = "virtual"
+)
+
+// Fields returns the output record fields in formatter order, tagged with
+// their origin, mirroring what the JSON/CSV/text formatters emit.
+func (p *ProtoProducer) Fields() []FlowField {
+	if p == nil || p.cfg == nil {
+		return nil
+	}
+	fm := p.cfg.GetFormatter()
+	if fm == nil {
+		return nil
+	}
+	fields := fm.Fields()
+	out := make([]FlowField, 0, len(fields))
+	for _, name := range fields {
+		f := FlowField{Name: name, Kind: FlowFieldNative}
+
+		renamed := false
+		if disp, ok := fm.Rename(name); ok && disp != "" {
+			f.Name = disp
+			f.Source = name
+			renamed = true
+		}
+
+		if _, ok := fm.Literal(name); ok {
+			f.Kind = FlowFieldLiteral
+		} else if renamed {
+			f.Kind = FlowFieldRenamed
+		} else if _, ok := fm.Remap(name); !ok {
+			f.Kind = FlowFieldVirtual
+		}
+
+		out = append(out, f)
+	}
+	return out
+}
+
 func (p *ProtoProducer) enrich(flowMessageSet []producer.ProducerMessage, cb func(msg *ProtoProducerMessage)) {
 	for _, msg := range flowMessageSet {
 		fmsg, ok := msg.(*ProtoProducerMessage)

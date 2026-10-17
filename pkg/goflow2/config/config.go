@@ -24,7 +24,10 @@ type Config struct {
 	ErrCnt int
 	ErrInt time.Duration
 
-	Addr string
+	Metrics bool
+
+	Addr  string
+	Pprof bool
 
 	StoreHTTPPath string
 
@@ -33,6 +36,10 @@ type Config struct {
 	DeviceDailyTTL  time.Duration
 
 	QueueStatsPath string
+
+	WebPath string
+
+	TransportStatsPath string
 
 	TemplatesTTL time.Duration
 
@@ -55,6 +62,8 @@ func BindFlags(fs *flag.FlagSet) *Config {
 
 	fs.StringVar(&cfg.ListenAddresses, "listen", "sflow://:6343,netflow://:2055", "listen addresses")
 	fs.StringVar(&cfg.Produce, "produce", "sample", "Producer method (sample or raw)")
+	fs.BoolVar(&cfg.Metrics, "metrics", true, "Enable Prometheus metrics and device statistics")
+	fs.BoolVar(&cfg.Pprof, "pprof", false, "Expose net/http/pprof handlers under /debug/pprof/ (for diagnosing performance)")
 	logging.RegisterFlags(fs, &cfg.Logging)
 	BindCommonFlags(fs, &cfg.Format, &cfg.Transport)
 	fs.IntVar(&cfg.ErrCnt, "err.cnt", 10, "Maximum errors per batch for muting")
@@ -65,6 +74,8 @@ func BindFlags(fs *flag.FlagSet) *Config {
 	fs.DurationVar(&cfg.DeviceHourlyTTL, "device.retention.hourly", 72*time.Hour, "Hourly device stats retention (hours)")
 	fs.DurationVar(&cfg.DeviceDailyTTL, "device.retention.daily", 90*24*time.Hour, "Daily device stats retention (hours, e.g. 2160h for 90 days)")
 	fs.StringVar(&cfg.QueueStatsPath, "queue.stats.path", "/queue-stats", "Receive queue usage HTTP path")
+	fs.StringVar(&cfg.TransportStatsPath, "transport.stats.path", "/transport-stats", "Transport target send queue usage HTTP path")
+	fs.StringVar(&cfg.WebPath, "web.path", "/ui", "Web dashboard HTTP path (empty disables it)")
 	fs.DurationVar(&cfg.TemplatesTTL, "templates.ttl", 0, "NetFlow/IPFIX templates TTL (0 disables expiry)")
 	fs.DurationVar(&cfg.TemplatesSweepInterval, "templates.sweep-interval", time.Minute, "NetFlow/IPFIX template expiry sweep interval")
 	fs.BoolVar(&cfg.TemplatesExtendOnAccess, "templates.ttl.extend-on-access", false, "Extend template TTL on access")

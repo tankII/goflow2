@@ -1,26 +1,37 @@
 package httpserver
 
 import (
+	_ "embed"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"strings"
 	"time"
 
 	"github.com/netsampler/goflow2/v3/metrics"
 	"github.com/netsampler/goflow2/v3/pkg/goflow2/collector"
+	protoproducer "github.com/netsampler/goflow2/v3/producer/proto"
+	"github.com/netsampler/goflow2/v3/transport"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Config configures the HTTP server.
 type Config struct {
-	Addr             string
-	StoreHTTPPath    string
-	DeviceStatsPath  string
-	QueueStatsPath   string
-	RouterCounter    *metrics.RouterCounter
-	QueueStatsSource func() []collector.QueueStat
-	LogHTTP          bool
+	Addr                 string
+	StoreHTTPPath        string
+	DeviceStatsPath      string
+	QueueStatsPath       string
+	TransportStatsPath   string
+	WebPath              string
+	Transport            string
+	Format               string
+	FlowFields           []protoproducer.FlowField
+	RouterCounter        *metrics.RouterCounter
+	QueueStatsSource     func() []collector.QueueStat
+	TransportStatsSource func() []transport.TargetStat
+	LogHTTP              bool
+	Pprof                bool
 }
 
 // StoreSource returns flowstore data for HTTP rendering.
@@ -66,6 +77,30 @@ func QueueStatsHandler(source func() []collector.QueueStat) http.HandlerFunc {
 	}
 }
 
+// TransportStatsHandler returns a handler serving per-target send buffer queue
+// usage as JSON.
+func TransportStatsHandler(source func() []transport.TargetStat) http.HandlerFunc {
+	return func(wr http.ResponseWriter, r *http.Request) {
+		stats := source()
+		if stats == nil {
+			stats = []transport.TargetStat{}
+		}
+		body, err := json.Marshal(stats)
+		if err != nil {
+			wr.WriteHeader(http.StatusInternalServerError)
+			if _, werr := wr.Write([]byte("Internal Server Error\n")); werr != nil {
+				slog.Error("error writing HTTP", slog.String("error", werr.Error()))
+			}
+			return
+		}
+		wr.Header().Add("Content-Type", "application/json")
+		wr.WriteHeader(http.StatusOK)
+		if _, err := wr.Write(body); err != nil {
+			slog.Error("error writing HTTP", slog.String("error", err.Error()))
+		}
+	}
+}
+
 // StoreHandler returns a handler for the store endpoint.
 func StoreHandler(store StoreSource) http.HandlerFunc {
 	return func(wr http.ResponseWriter, r *http.Request) {
@@ -80,6 +115,43 @@ func StoreHandler(store StoreSource) http.HandlerFunc {
 		wr.Header().Add("Content-Type", "application/json")
 		wr.WriteHeader(http.StatusOK)
 		if _, err := wr.Write(body); err != nil {
+			slog.Error("error writing HTTP", slog.String("error", err.Error()))
+		}
+	}
+}
+
+// dashboardConfig is injected into the dashboard page as JSON so the frontend
+// can discover the endpoints that are actually enabled.
+type dashboardConfig struct {
+	HealthPath         string                    `json:"healthPath"`
+	MetricsPath        string                    `json:"metricsPath"`
+	StorePath          string                    `json:"storePath"`
+	QueueStatsPath     string                    `json:"queueStatsPath"`
+	TransportStatsPath string                    `json:"transportStatsPath"`
+	DeviceStatsPath    string                    `json:"deviceStatsPath"`
+	DeviceListPath     string                    `json:"deviceListPath"`
+	Transport          string                    `json:"transport"`
+	Format             string                    `json:"format"`
+	FlowFields         []protoproducer.FlowField `json:"flowFields"`
+}
+
+const dashboardConfigPlaceholder = "__GOFLOW2_CONFIG__"
+
+//go:embed web/index.html
+var dashboardHTML string
+
+// DashboardHandler returns a handler serving the embedded web dashboard, with
+// the endpoint configuration injected into the page.
+func dashboardHandler(cfg dashboardConfig) http.HandlerFunc {
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		slog.Error("error marshalling dashboard config", slog.String("error", err.Error()))
+	}
+	page := strings.Replace(dashboardHTML, dashboardConfigPlaceholder, string(body), 1)
+	return func(wr http.ResponseWriter, r *http.Request) {
+		wr.Header().Add("Content-Type", "text/html; charset=utf-8")
+		wr.WriteHeader(http.StatusOK)
+		if _, err := wr.Write([]byte(page)); err != nil {
 			slog.Error("error writing HTTP", slog.String("error", err.Error()))
 		}
 	}
@@ -137,32 +209,73 @@ func New(cfg Config, store StoreSource, isCollecting func() bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/__health", HealthHandler(isCollecting))
+
+	storePath := ""
 	if cfg.StoreHTTPPath != "" && store != nil {
-		mux.HandleFunc(cfg.StoreHTTPPath, StoreHandler(store))
-	}
-	if cfg.RouterCounter != nil {
-		basePath := cfg.DeviceStatsPath
-		if basePath == "" {
-			basePath = "/device-stats"
-		}
-		if !strings.HasSuffix(basePath, "/") {
-			basePath += "/"
-		}
-		mux.HandleFunc(basePath+"hourly", metrics.DeviceHourlyHandler(cfg.RouterCounter))
-		mux.HandleFunc(basePath+"daily", metrics.DeviceDailyHandler(cfg.RouterCounter))
-		mux.HandleFunc("/device-list", metrics.DeviceListHandler(cfg.RouterCounter))
+		storePath = cfg.StoreHTTPPath
+		mux.HandleFunc(storePath, StoreHandler(store))
 	}
 
+	// Device statistics endpoints stay available even when metrics are
+	// disabled: the handlers then respond with empty data (200 OK).
+	deviceStatsPath := orDefault(cfg.DeviceStatsPath, "/device-stats")
+	deviceListPath := "/device-list"
+	deviceBase := strings.TrimSuffix(deviceStatsPath, "/")
+	mux.HandleFunc(deviceBase+"/hourly", metrics.DeviceHourlyHandler(cfg.RouterCounter))
+	mux.HandleFunc(deviceBase+"/daily", metrics.DeviceDailyHandler(cfg.RouterCounter))
+	mux.HandleFunc(deviceListPath, metrics.DeviceListHandler(cfg.RouterCounter))
+
+	queueStatsPath := ""
 	if cfg.QueueStatsSource != nil {
-		path := cfg.QueueStatsPath
-		if path == "" {
-			path = "/queue-stats"
-		}
-		mux.HandleFunc(path, QueueStatsHandler(cfg.QueueStatsSource))
+		queueStatsPath = orDefault(cfg.QueueStatsPath, "/queue-stats")
+		mux.HandleFunc(queueStatsPath, QueueStatsHandler(cfg.QueueStatsSource))
+	}
+
+	transportStatsPath := ""
+	if cfg.TransportStatsSource != nil {
+		transportStatsPath = orDefault(cfg.TransportStatsPath, "/transport-stats")
+		mux.HandleFunc(transportStatsPath, TransportStatsHandler(cfg.TransportStatsSource))
+	}
+
+	if cfg.WebPath != "" {
+		mux.HandleFunc(cfg.WebPath, dashboardHandler(dashboardConfig{
+			HealthPath:         "/__health",
+			MetricsPath:        "/metrics",
+			StorePath:          storePath,
+			QueueStatsPath:     queueStatsPath,
+			TransportStatsPath: transportStatsPath,
+			DeviceStatsPath:    deviceStatsPath,
+			DeviceListPath:     deviceListPath,
+			Transport:          cfg.Transport,
+			Format:             cfg.Format,
+			FlowFields:         cfg.FlowFields,
+		}))
+	}
+
+	if cfg.Pprof {
+		registerPprof(mux)
 	}
 
 	if cfg.LogHTTP {
 		return withAccessLog(mux)
 	}
 	return mux
+}
+
+// registerPprof exposes the standard Go profiling endpoints under
+// /debug/pprof/. It is opt-in because it can leak process internals and is
+// expensive to serve; enable it only when profiling a running collector.
+func registerPprof(mux *http.ServeMux) {
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+}
+
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }
