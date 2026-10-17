@@ -12,8 +12,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// PromDecoderWrapper wraps a decoder to emit Prometheus metrics.
+// PromDecoderWrapper wraps a decoder to emit Prometheus metrics. When rc is
+// nil metrics are disabled and the decoder is returned unchanged.
 func PromDecoderWrapper(wrapped utils.DecoderFunc, name string, rc *RouterCounter) utils.DecoderFunc {
+	if rc == nil {
+		return wrapped
+	}
 	return func(msg interface{}) error {
 		pkt, ok := msg.(*utils.Message)
 		if !ok {

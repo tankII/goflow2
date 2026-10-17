@@ -109,15 +109,31 @@ func New(cfg Config) (*Collector, error) {
 	}, nil
 }
 
+// receiverCallback reports received drops to Prometheus, or nil when metrics
+// are disabled.
+func (c *Collector) receiverCallback() utils.ReceiverCallback {
+	if c.routerCounter == nil {
+		return nil
+	}
+	return metrics.NewReceiverMetric()
+}
+
+// templateStoreOptions returns the hooks installed on the fallback template
+// store, or no options when metrics are disabled.
+func (c *Collector) templateStoreOptions() []templates.FlowStoreOption {
+	if c.routerCounter == nil {
+		return nil
+	}
+	return []templates.FlowStoreOption{templates.WithHooks(metrics.TemplateStoreHooks())}
+}
+
 // Start launches receivers and error handlers.
 func (c *Collector) Start() error {
 	c.stopCh = make(chan struct{})
 
 	templateStore := c.templateStore
 	if templateStore == nil {
-		templateStore = templates.NewTemplateFlowStore(
-			templates.WithHooks(metrics.TemplateStoreHooks()),
-		)
+		templateStore = templates.NewTemplateFlowStore(c.templateStoreOptions()...)
 	}
 	templateStore.Start()
 	c.templateStore = templateStore
@@ -155,7 +171,7 @@ func (c *Collector) Start() error {
 			Workers:          listenCfg.NumWorkers,
 			QueueSize:        listenCfg.QueueSize,
 			Blocking:         listenCfg.Blocking,
-			ReceiverCallback: metrics.NewReceiverMetric(),
+			ReceiverCallback: c.receiverCallback(),
 		}
 		recv, err := utils.NewUDPReceiver(recvCfg)
 		if err != nil {

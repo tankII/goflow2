@@ -244,3 +244,31 @@ func TestGetUnknownRouter(t *testing.T) {
 		t.Fatal("expected error for unknown router daily")
 	}
 }
+
+func BenchmarkRouterCounterIncPacket(b *testing.B) {
+	rc := NewRouterCounter(time.Hour*72, time.Hour*24*90)
+	defer rc.Stop()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rc.IncPacket("10.0.0.1", 1500)
+	}
+}
+
+func BenchmarkRouterCounterIncPacketParallel(b *testing.B) {
+	rc := NewRouterCounter(time.Hour*72, time.Hour*24*90)
+	defer rc.Stop()
+
+	routers := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5", "10.0.0.6", "10.0.0.7", "10.0.0.8"}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			rc.IncPacket(routers[i%len(routers)], 1500)
+			i++
+		}
+	})
+}

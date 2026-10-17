@@ -52,9 +52,23 @@ type DeviceInfo struct {
 
 // deviceStats holds per-device buckets. Time buckets use local time.
 type deviceStats struct {
+	// mu serializes updates to this device. The owning RouterCounter's map
+	// lock only guards map membership, so distinct devices update in parallel.
+	mu       sync.Mutex
 	hourly   map[string]*BucketCounter
 	daily    map[string]*BucketCounter
 	lastSeen time.Time
+
+	// Bucket keys are cached per whole second so the hot path avoids two
+	// time.Format calls per datagram. Guarded by mu.
+	keySec  int64
+	hourKey string
+	dayKey  string
+
+	// Cached Prometheus child handles to keep the hot path allocation-free.
+	lastSeenG prometheus.Gauge
+	packetsG  prometheus.Gauge
+	flowsG    prometheus.Gauge
 }
 
 // RouterCounter tracks per-device hourly and daily statistics. Safe for
@@ -110,46 +124,73 @@ func (rc *RouterCounter) inc(router string, packets, flows int64, bytes int64) {
 	if packets == 0 && flows == 0 {
 		return
 	}
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
 
-	ds, ok := rc.devices[router]
-	if !ok {
+	// Fast path: hold only the map read lock (so the device cannot be pruned
+	// out from under us) and the per-device lock (so same-device updates
+	// serialize). Distinct devices proceed in parallel.
+	rc.mu.RLock()
+	ds := rc.devices[router]
+	if ds != nil {
+		ds.mu.Lock()
+		applyCounters(ds, rc.now(), packets, flows, bytes)
+		ds.mu.Unlock()
+		rc.mu.RUnlock()
+		return
+	}
+	rc.mu.RUnlock()
+
+	// Slow path: first datagram from this device.
+	rc.mu.Lock()
+	ds = rc.devices[router]
+	if ds == nil {
+		labels := prometheus.Labels{"router": router}
 		ds = &deviceStats{
-			hourly: make(map[string]*BucketCounter),
-			daily:  make(map[string]*BucketCounter),
+			hourly:    make(map[string]*BucketCounter),
+			daily:     make(map[string]*BucketCounter),
+			lastSeenG: DeviceLastSeenGauge.With(labels),
+			packetsG:  DevicePacketsTotalGauge.With(labels),
+			flowsG:    DeviceFlowsTotalGauge.With(labels),
 		}
 		rc.devices[router] = ds
 		DeviceActiveGauge.Inc()
 	}
+	ds.mu.Lock()
+	applyCounters(ds, rc.now(), packets, flows, bytes)
+	ds.mu.Unlock()
+	rc.mu.Unlock()
+}
 
-	now := rc.now()
+// applyCounters folds one datagram into the device buckets. Callers must hold
+// ds.mu.
+func applyCounters(ds *deviceStats, now time.Time, packets, flows, bytes int64) {
 	ds.lastSeen = now
-	hKey := now.Format(hourlyKeyLayout)
-	dKey := now.Format(dailyKeyLayout)
-
-	if ds.hourly[hKey] == nil {
-		ds.hourly[hKey] = &BucketCounter{}
+	if sec := now.Unix(); sec != ds.keySec {
+		ds.keySec = sec
+		ds.hourKey = now.Format(hourlyKeyLayout)
+		ds.dayKey = now.Format(dailyKeyLayout)
 	}
-	ds.hourly[hKey].Packets += packets
-	ds.hourly[hKey].Flows += flows
-	ds.hourly[hKey].Bytes += bytes
 
-	if ds.daily[dKey] == nil {
-		ds.daily[dKey] = &BucketCounter{}
+	if ds.hourly[ds.hourKey] == nil {
+		ds.hourly[ds.hourKey] = &BucketCounter{}
 	}
-	ds.daily[dKey].Packets += packets
-	ds.daily[dKey].Flows += flows
-	ds.daily[dKey].Bytes += bytes
+	ds.hourly[ds.hourKey].Packets += packets
+	ds.hourly[ds.hourKey].Flows += flows
+	ds.hourly[ds.hourKey].Bytes += bytes
 
-	// keep Prometheus gauges current on the hot path (cheap, per-device)
-	labels := prometheus.Labels{"router": router}
-	DeviceLastSeenGauge.With(labels).Set(float64(now.Unix()))
+	if ds.daily[ds.dayKey] == nil {
+		ds.daily[ds.dayKey] = &BucketCounter{}
+	}
+	ds.daily[ds.dayKey].Packets += packets
+	ds.daily[ds.dayKey].Flows += flows
+	ds.daily[ds.dayKey].Bytes += bytes
+
+	// keep Prometheus gauges current on the hot path (cheap, cached handles)
+	ds.lastSeenG.Set(float64(now.Unix()))
 	if packets > 0 {
-		DevicePacketsTotalGauge.With(labels).Add(float64(packets))
+		ds.packetsG.Add(float64(packets))
 	}
 	if flows > 0 {
-		DeviceFlowsTotalGauge.With(labels).Add(float64(flows))
+		ds.flowsG.Add(float64(flows))
 	}
 }
 
@@ -330,20 +371,30 @@ func init() {
 	prometheus.MustRegister(DeviceFlowsTotalGauge)
 }
 
-// DeviceListHandler serves GET /device-list.
+// DeviceListHandler serves GET /device-list. When metrics are disabled (rc is
+// nil) it responds with an empty list.
 func DeviceListHandler(rc *RouterCounter) http.HandlerFunc {
 	return func(wr http.ResponseWriter, r *http.Request) {
 		wr.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(wr).Encode(rc.Devices()); err != nil {
+		devices := []DeviceInfo{}
+		if rc != nil {
+			devices = rc.Devices()
+		}
+		if err := json.NewEncoder(wr).Encode(devices); err != nil {
 			slog.Error("device list encode error", slog.String("error", err.Error()))
 		}
 	}
 }
 
-// DeviceHourlyHandler serves GET <base>/hourly?router=X.
+// DeviceHourlyHandler serves GET <base>/hourly?router=X. When metrics are
+// disabled (rc is nil) it responds with an empty set of buckets.
 func DeviceHourlyHandler(rc *RouterCounter) http.HandlerFunc {
 	return func(wr http.ResponseWriter, r *http.Request) {
 		router := r.URL.Query().Get("router")
+		if rc == nil {
+			writeDeviceBuckets(wr, router, "hourly", []HourlyEntry{})
+			return
+		}
 		if router == "" {
 			http.Error(wr, `{"error":"missing router parameter"}`+"\n", http.StatusBadRequest)
 			return
@@ -353,21 +404,19 @@ func DeviceHourlyHandler(rc *RouterCounter) http.HandlerFunc {
 			http.Error(wr, `{"error":"`+err.Error()+`"}`+"\n", http.StatusNotFound)
 			return
 		}
-		wr.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(wr).Encode(map[string]interface{}{
-			"router":  router,
-			"window":  "hourly",
-			"buckets": entries,
-		}); err != nil {
-			slog.Error("device hourly encode error", slog.String("error", err.Error()))
-		}
+		writeDeviceBuckets(wr, router, "hourly", entries)
 	}
 }
 
-// DeviceDailyHandler serves GET <base>/daily?router=X.
+// DeviceDailyHandler serves GET <base>/daily?router=X. When metrics are
+// disabled (rc is nil) it responds with an empty set of buckets.
 func DeviceDailyHandler(rc *RouterCounter) http.HandlerFunc {
 	return func(wr http.ResponseWriter, r *http.Request) {
 		router := r.URL.Query().Get("router")
+		if rc == nil {
+			writeDeviceBuckets(wr, router, "daily", []DailyEntry{})
+			return
+		}
 		if router == "" {
 			http.Error(wr, `{"error":"missing router parameter"}`+"\n", http.StatusBadRequest)
 			return
@@ -377,13 +426,17 @@ func DeviceDailyHandler(rc *RouterCounter) http.HandlerFunc {
 			http.Error(wr, `{"error":"`+err.Error()+`"}`+"\n", http.StatusNotFound)
 			return
 		}
-		wr.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(wr).Encode(map[string]interface{}{
-			"router":  router,
-			"window":  "daily",
-			"buckets": entries,
-		}); err != nil {
-			slog.Error("device daily encode error", slog.String("error", err.Error()))
-		}
+		writeDeviceBuckets(wr, router, "daily", entries)
+	}
+}
+
+func writeDeviceBuckets(wr http.ResponseWriter, router, window string, buckets interface{}) {
+	wr.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(wr).Encode(map[string]interface{}{
+		"router":  router,
+		"window":  window,
+		"buckets": buckets,
+	}); err != nil {
+		slog.Error("device stats encode error", slog.String("window", window), slog.String("error", err.Error()))
 	}
 }

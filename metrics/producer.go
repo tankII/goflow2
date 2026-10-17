@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"net/netip"
+	"sync"
 
 	"github.com/netsampler/goflow2/v3/decoders/netflow"
 	"github.com/netsampler/goflow2/v3/decoders/netflowlegacy"
@@ -13,10 +14,21 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// timeStatsKey identifies a cached per-(router,version) histogram handle.
+type timeStatsKey struct {
+	router  string
+	version string
+}
+
 // PromProducerWrapper wraps a producer to emit Prometheus metrics.
 type PromProducerWrapper struct {
 	wrapped       producer.ProducerInterface
 	routerCounter *RouterCounter
+
+	// timeStats caches NetFlowTimeStatsSum observer handles so the per-flow
+	// hot path avoids rebuilding a label map and hashing it on every record.
+	// Cardinality is bounded by (number of routers x IPFIX/NetFlow versions).
+	timeStats sync.Map // timeStatsKey -> prometheus.Observer
 }
 
 // Produce forwards to the wrapped producer and updates metrics.
@@ -122,23 +134,32 @@ func (p *PromProducerWrapper) Produce(msg interface{}, args *producer.ProduceArg
 	}
 
 	if nfvariant {
+		// resolve the observer once per packet instead of once per flow, so
+		// the per-record hot path avoids rebuilding and hashing a label map
+		obs := p.timeStatsObserver(key, versionStr)
 		for _, msg := range flowMessageSet {
 			fmsg, ok := msg.(*protoproducer.ProtoProducerMessage)
 			if !ok {
 				continue
 			}
 			timeDiff := fmsg.TimeReceivedNs - fmsg.TimeFlowEndNs
-
-			NetFlowTimeStatsSum.With(
-				prometheus.Labels{
-					"router":  key,
-					"version": versionStr,
-				}).
-				Observe(float64(timeDiff) / 1e9)
+			obs.Observe(float64(timeDiff) / 1e9)
 		}
 	}
 
 	return flowMessageSet, nil
+}
+
+// timeStatsObserver returns the cached NetFlowTimeStatsSum observer for the
+// given router and version, creating and caching it on first use.
+func (p *PromProducerWrapper) timeStatsObserver(router, version string) prometheus.Observer {
+	k := timeStatsKey{router: router, version: version}
+	if obs, ok := p.timeStats.Load(k); ok {
+		return obs.(prometheus.Observer)
+	}
+	obs := NetFlowTimeStatsSum.With(prometheus.Labels{"router": router, "version": version})
+	actual, _ := p.timeStats.LoadOrStore(k, obs)
+	return actual.(prometheus.Observer)
 }
 
 // Close forwards Close to the wrapped producer.
@@ -151,8 +172,12 @@ func (p *PromProducerWrapper) Commit(flowMessageSet []producer.ProducerMessage) 
 	p.wrapped.Commit(flowMessageSet)
 }
 
-// WrapPromProducer wraps a producer with metrics reporting.
+// WrapPromProducer wraps a producer with metrics reporting. When rc is nil
+// metrics are disabled and the producer is returned unchanged.
 func WrapPromProducer(wrapped producer.ProducerInterface, rc *RouterCounter) producer.ProducerInterface {
+	if rc == nil {
+		return wrapped
+	}
 	return &PromProducerWrapper{
 		wrapped:       wrapped,
 		routerCounter: rc,
