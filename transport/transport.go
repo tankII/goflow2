@@ -30,10 +30,27 @@ func (e *DriverTransportError) Unwrap() []error {
 
 // TransportDriver describes a transport plugin lifecycle and send method.
 type TransportDriver interface {
-	Prepare() error              // Prepare driver (eg: flag registration)
-	Init() error                 // Initialize driver (eg: start connections, open files...)
-	Close() error                // Close driver (eg: close connections and files...)
-	Send(key, data []byte) error // Send a formatted message
+	Prepare() error              // Prepare driver
+	Init() error                 // Init driver
+	Close() error                // Close driver
+	Send(key, data []byte) error // Send a message
+}
+
+// TargetStat reports the send buffer queue usage of a single transport target.
+type TargetStat struct {
+	Addr        string  `json:"addr"`
+	Depth       int     `json:"depth"`
+	Capacity    int     `json:"capacity"`
+	Utilization float64 `json:"utilization"`
+	Dropped     uint64  `json:"dropped"`
+	Connected   bool    `json:"connected"`
+	Drop        bool    `json:"drop"`
+}
+
+// TargetStatsProvider is implemented by transports exposing per-target send
+// buffer queue usage.
+type TargetStatsProvider interface {
+	TargetStats() []TargetStat
 }
 
 // TransportInterface is the minimal interface needed to send payloads.
@@ -88,6 +105,15 @@ func FindTransport(name string) (*Transport, error) {
 		err = &DriverTransportError{name, err}
 	}
 	return &Transport{t, name}, err
+}
+
+// StatsSource returns a function reporting the send buffer queue usage of the
+// transport targets, or nil when the driver does not expose such stats.
+func (t *Transport) StatsSource() func() []TargetStat {
+	if provider, ok := t.TransportDriver.(TargetStatsProvider); ok {
+		return provider.TargetStats
+	}
+	return nil
 }
 
 // GetTransports returns the list of registered transport names.
