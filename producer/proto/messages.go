@@ -275,6 +275,36 @@ type compiledField struct {
 	// directScalar 表示"原生 protobuf 标量列且用户未自定义 renderer"。
 	// 这类列无需装箱成 interface 再交给 renderer，可在渲染期直接取值。
 	directScalar bool
+
+	// appendKind 表示该列可走"直写旁路"：使用内建 renderer 且字段形态匹配，
+	// 因此可绕过 renderer 的"返回值转字符串"这一步，直接追加进目标缓冲。
+	// 仅内建 IP / datetime 类 renderer 会被识别；用户自定义 renderer 一律不走此路。
+	appendKind   appendKind
+	appendLayout string // 仅 appendDateTimeNano 使用
+}
+
+// appendKind 标识某列的直写方式（0 表示不支持直写，仍走 renderer 字符串路径）。
+type appendKind uint8
+
+const (
+	appendNone appendKind = iota
+	// appendIP：字段是 []byte，追加其文本形式的 IP 地址。
+	appendIP
+	// appendDateTimeNano：字段是纳秒级时间戳，按自定义 layout 追加。
+	appendDateTimeNano
+)
+
+// appendColumn 直写旁路：把该列的文本形式追加到 dst，全程不装箱、不建中间字符串。
+// 输出与对应 renderer 的字符串结果逐字节一致。
+func (cf *compiledField) appendColumn(v reflect.Value, dst []byte) []byte {
+	switch cf.appendKind {
+	case appendIP:
+		// Bytes() 直接取 []byte，不经过 Interface() 装箱
+		return appendIPBytes(dst, v.Bytes())
+	case appendDateTimeNano:
+		return appendDateTimeNanoField(dst, v.Uint(), cf.appendLayout)
+	}
+	return dst
 }
 
 // scalarDirect reports whether a reflect.Kind can be formatted without boxing.
@@ -303,6 +333,17 @@ type compiledPlan struct {
 }
 
 var protoMessageType = reflect.TypeOf((*ProtoProducerMessage)(nil)).Elem()
+
+// rendererIDOf 以可选接口方式取列的 renderer 标识；不支持的实现返回 false，
+// 该列便不会走直写旁路（安全退化到原字符串路径）。
+func rendererIDOf(f FormatterMapper, name string) (RendererID, bool) {
+	if g, ok := f.(interface {
+		RenderID(name string) (RendererID, bool)
+	}); ok {
+		return g.RenderID(name)
+	}
+	return "", false
+}
 
 // compilePlan resolves once, per formatter, everything that does not depend on
 // the message: field indices, renderers, literals and array-ness.
@@ -343,6 +384,15 @@ func compilePlan(f FormatterMapper) *compiledPlan {
 		cf.isArray = f.IsArray(fieldName)
 		// 原生标量列 + 未自定义 renderer → 可跳过装箱与 renderer，直接格式化。
 		cf.directScalar = cf.hasField && !cf.isArray && !cf.hasRenderer && scalarDirect(fieldKind)
+		// 内建 IP / datetime renderer + 字段形态匹配 → 可直写进缓冲。
+		if cf.hasField && !cf.isArray && cf.hasRenderer {
+			// 仅当"登记的标识"与"当前实际使用的 renderer 函数"都指向内建实现时
+			// 才开启直写：若调用方只替换了 render 而未同步 renderIDs（或反之），
+			// 这里会检测到不一致并退���到原字符串路径，避免绕过自定义 renderer。
+			if id, ok := rendererIDOf(f, fieldName); ok && builtinRendererMatches(id, cf.renderer) {
+				cf.appendKind, cf.appendLayout = appendKindFor(id, fieldKind)
+			}
+		}
 		plan.fields[i] = cf
 	}
 
@@ -477,6 +527,17 @@ func (m *ProtoProducerMessage) renderFieldParts(sp *[]fieldPart, skipDirectScala
 
 		part.finalName = cf.finalName
 		part.array = cf.isArray
+
+		// 可直写列（原生标量 / 内建 IP·时间）：CSV 追加路径不需要中间字符串，
+		// 由 AppendCSVRow 直接取值追加；此处只标记 present。
+		if cf.appendKind != appendNone {
+			part.present = true
+			if fieldValue.IsValid() && !skipDirectScalar {
+				part.inline[0] = valueRender{val: renderAppendable(cf, fieldValue), isStr: true}
+				part.values = part.inline[:1]
+			}
+			continue
+		}
 
 		// 原生标量列（未自定义 renderer）：跳过 Interface() 装箱与 renderer 调用。
 		// 值仍经 renderValue 格式化，保证 text/JSON 路径输出与旧实现完全一致；
@@ -681,6 +742,10 @@ func (m *ProtoProducerMessage) AppendCSVRow(dst []byte, delim string) []byte {
 		switch {
 		case !part.present:
 			// missing column: empty, unquoted
+		case plan.fields[i].appendKind != appendNone:
+			// 内建 IP / 时间列：直接追加，不装箱、不建中间字符串，
+			// 输出与 renderer 字符串结果逐字节一致（时间格式含空格也无需转义）。
+			dst = plan.fields[i].appendColumn(vfm.FieldByIndex(plan.fields[i].fieldIndex), dst)
 		case plan.fields[i].directScalar:
 			// 原生标量列：数字/布尔无需转义，直接 strconv 追加，不产生中间字符串。
 			dst = appendScalar(dst, vfm.FieldByIndex(plan.fields[i].fieldIndex))

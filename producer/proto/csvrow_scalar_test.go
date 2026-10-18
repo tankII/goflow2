@@ -239,3 +239,97 @@ func TestAppendCSVRowNoRendererNumericIsPlain(t *testing.T) {
 
 	assert.Equal(t, "6|4096", string(m.AppendCSVRow(nil, "|")))
 }
+
+// csvIPTimeFixture 构造一条与现网形态一致的消息：2 个时间列 + 3 个 IP 列
+// + 若干原生标量列 + 1 个常量列，时间/IP 均使用内建 renderer。
+//
+// 必须走 mapFormat 这条真实路径：renderIDs（直写旁路的判定依据）由它填充，
+// 直接构造 FormatterConfigMapper 会漏掉该信息。
+func csvIPTimeFixture(t *testing.T, m *ProtoProducerMessage) {
+	t.Helper()
+	mapped, err := mapFormat(&ProducerConfig{
+		Formatter: FormatterConfig{
+			Fields: []string{
+				"TimeFlowStartNs", "TimeFlowEndNs", "SrcAddr", "src_port",
+				"DstAddr", "dst_port", "SamplerAddress", "packets", "Flows",
+			},
+			Render: map[string]RendererID{
+				"TimeFlowStartNs": "datetimenano:2006-01-02 15:04:05.000",
+				"TimeFlowEndNs":   "datetimenano:2006-01-02 15:04:05.000",
+			},
+			Literal: map[string]interface{}{"Flows": 1},
+		},
+	})
+	require.NoError(t, err)
+	m.formatter = mapped
+	m.TimeFlowStartNs = 1705732882176 * 1e6
+	m.TimeFlowEndNs = 1705732882192 * 1e6
+	m.SrcAddr = []byte{192, 0, 2, 10}
+	m.SrcPort = 54321
+	m.DstAddr = []byte{198, 51, 100, 20}
+	m.DstPort = 443
+	m.SamplerAddress = []byte{10, 0, 0, 7}
+	m.Packets = 17
+}
+
+// TestAppendCSVRowIPAndTimeMatchesLegacy pins byte-identical output for the
+// IP/time append fast path against the legacy renderer pipeline.
+func TestAppendCSVRowIPAndTimeMatchesLegacy(t *testing.T) {
+	for _, delim := range []string{"|", ","} {
+		var m ProtoProducerMessage
+		csvIPTimeFixture(t, &m)
+		assert.Equal(t, legacyRowRef(&m, delim), string(m.AppendCSVRow(nil, delim)),
+			"delimiter %q", delim)
+	}
+}
+
+// TestAppendCSVRowIPAndTimeIPv6 covers 16-byte addresses and the empty/invalid
+// cases where the renderer returns an empty string.
+func TestAppendCSVRowIPAndTimeIPv6(t *testing.T) {
+	var m ProtoProducerMessage
+	csvIPTimeFixture(t, &m)
+	m.SrcAddr = []byte{0x24, 0x09, 0x8f, 0x1f, 0x92, 0x85, 0x2c, 0x04,
+		0x70, 0x6b, 0x5a, 0xef, 0xe0, 0x8, 0xc5, 0xe8}
+	m.DstAddr = nil // 空地址：renderer 返回 ""
+
+	want := legacyRowRef(&m, "|")
+	assert.Equal(t, want, string(m.AppendCSVRow(nil, "|")))
+}
+
+// TestAppendCSVRowCustomRendererNotBypassed guards that a user-supplied renderer
+// on an IP column is still honored — the append fast path only applies to the
+// built-in IP renderer.
+func TestAppendCSVRowCustomRendererNotBypassed(t *testing.T) {
+	var m ProtoProducerMessage
+	csvIPTimeFixture(t, &m)
+	// 只替换 render、不动 renderIDs —— 模拟"配置与实际 renderer 不一致"的最坏情况。
+	// compilePlan 需检测到不一致并退回字符串路径，否则会绕过自定义 renderer。
+	mapped := m.formatter.(*FormatterConfigMapper)
+	mapped.render["SrcAddr"] =
+		func(_ *ProtoProducerMessage, _ string, data interface{}) interface{} {
+			return "CUSTOM"
+		}
+
+	want := legacyRowRef(&m, "|")
+	got := string(m.AppendCSVRow(nil, "|"))
+	assert.Equal(t, want, got)
+	assert.Contains(t, got, "CUSTOM")
+}
+
+// TestAppendCSVRowIPAndTimeNoAlloc is the optimization contract: with the
+// built-in IP/time renderers the row must be built without an intermediate
+// string per column.
+func TestAppendCSVRowIPAndTimeNoAlloc(t *testing.T) {
+	var m ProtoProducerMessage
+	csvIPTimeFixture(t, &m)
+
+	buf := make([]byte, 0, 512)
+	m.AppendCSVRow(buf[:0], "|") // warm pools
+
+	allocs := testing.AllocsPerRun(200, func() {
+		buf = m.AppendCSVRow(buf[:0], "|")
+	})
+	assert.Less(t, allocs, 3.0,
+		"IP/time append path must not allocate per column, got %v allocs/run", allocs)
+	assert.Equal(t, legacyRowRef(&m, "|"), string(buf))
+}

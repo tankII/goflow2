@@ -7,25 +7,31 @@ import (
 )
 
 // benchCSVMessage builds a message shaped like the production formatter:
-// 14 columns mixing IPs, ports, counters, a constant column and a timestamp.
+// 14 columns mixing IPs, ports, counters, a constant column and two
+// datetimenano-rendered timestamps. Goes through mapFormat so the built-in
+// renderer IDs (and therefore the append fast path) are populated as in prod.
 func benchCSVMessage(b *testing.B) *ProtoProducerMessage {
 	b.Helper()
 
-	m := &ProtoProducerMessage{}
-	m.formatter = &FormatterConfigMapper{
-		fields: []string{
-			"TimeFlowStartNs", "TimeFlowEndNs", "Proto",
-			"SrcAddr", "SrcPort", "DstAddr", "DstPort",
-			"SrcAs", "DstAs", "Packets", "Bytes", "Flows", "IpTos",
-			"SamplerAddress",
+	mapped, err := mapFormat(&ProducerConfig{
+		Formatter: FormatterConfig{
+			Fields: []string{
+				"time_flow_start_ns", "time_flow_end_ns", "proto",
+				"src_addr", "src_port", "dst_addr", "dst_port",
+				"src_as", "dst_as", "packets", "bytes", "Flows", "ip_tos",
+				"sampler_address",
+			},
+			Render: map[string]RendererID{
+				"time_flow_start_ns": "datetimenano:2006-01-02 15:04:05.000",
+				"time_flow_end_ns":   "datetimenano:2006-01-02 15:04:05.000",
+			},
+			Literal: map[string]interface{}{"Flows": 1},
 		},
-		literal: map[string]string{"Flows": "1"},
-		render: map[string]RenderFunc{
-			"SrcAddr":        IPRenderer,
-			"DstAddr":        IPRenderer,
-			"SamplerAddress": IPRenderer,
-		},
+	})
+	if err != nil {
+		b.Fatal(err)
 	}
+	m := &ProtoProducerMessage{formatter: mapped}
 	m.TimeFlowStartNs = 1705732882176 * 1e6
 	m.TimeFlowEndNs = 1705732882192 * 1e6
 	m.Proto = 6

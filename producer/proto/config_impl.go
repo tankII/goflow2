@@ -133,15 +133,18 @@ type DataMap struct {
 
 // FormatterConfigMapper implements FormatterMapper from a config.
 type FormatterConfigMapper struct {
-	fields  []string
-	key     []string
-	reMap   map[string]string // map from a potential json name into the protobuf structure
-	rename  map[string]string // manually renaming fields
-	render  map[string]RenderFunc
-	pbMap   map[string]ProtobufFormatterConfig
-	numToPb map[int32]ProtobufFormatterConfig
-	isSlice map[string]bool
-	literal map[string]string // constant-valued columns
+	fields []string
+	key    []string
+	reMap  map[string]string // map from a potential json name into the protobuf structure
+	rename map[string]string // manually renaming fields
+	render map[string]RenderFunc
+	// renderIDs 记录每列配置的 renderer 标识（含内建默认列），用于在 compilePlan
+	// 阶段判定该列能否走"直写旁路"。自定义 renderer 也会记录，便于识别并跳过。
+	renderIDs map[string]RendererID
+	pbMap     map[string]ProtobufFormatterConfig
+	numToPb   map[int32]ProtobufFormatterConfig
+	isSlice   map[string]bool
+	literal   map[string]string // constant-valued columns
 
 	planOnce sync.Once
 	plan     *compiledPlan
@@ -174,6 +177,13 @@ func (f *FormatterConfigMapper) Remap(name string) (string, bool) {
 
 func (f *FormatterConfigMapper) Render(name string) (RenderFunc, bool) {
 	r, ok := f.render[name]
+	return r, ok
+}
+
+// RenderID 返回该列配置的 renderer 标识。热路径以可选接口方式探测，
+// 不改动 FormatterMapper 公开接口。
+func (f *FormatterConfigMapper) RenderID(name string) (RendererID, bool) {
+	r, ok := f.renderIDs[name]
 	return r, ok
 }
 
@@ -470,8 +480,12 @@ func mapFormat(cfg *ProducerConfig) (*FormatterConfigMapper, error) {
 	formatterMapped.rename = make(map[string]string)
 	formatterMapped.literal = make(map[string]string)
 	formatterMapped.isSlice = isSliceMap
+	formatterMapped.renderIDs = make(map[string]RendererID)
 	for k, v := range defaultRenderers {
 		formatterMapped.render[k] = v
+	}
+	for k, v := range defaultRenderIDs {
+		formatterMapped.renderIDs[k] = v
 	}
 
 	if cfg != nil {
@@ -510,6 +524,7 @@ func mapFormat(cfg *ProducerConfig) (*FormatterConfigMapper, error) {
 			}
 			if renderer, ok := resolveRenderer(v); ok {
 				formatterMapped.render[k] = renderer
+				formatterMapped.renderIDs[k] = v
 			} else {
 				return formatterMapped, fmt.Errorf("field %s is not a renderer", v) // todo: make proper error
 			}

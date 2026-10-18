@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -40,6 +41,19 @@ var (
 		RendererDateTime:     DateTimeRenderer,
 		RendererDateTimeNano: DateTimeNanoRenderer,
 		RendererString:       StringRenderer,
+	}
+
+	// defaultRenderIDs 与 defaultRenderers 的内建列一一对应，仅用于 compilePlan
+	// 判定直写旁路；未列出的默认列走原 renderer 字符串路径。
+	defaultRenderIDs = map[string]RendererID{
+		"SrcAddr":                    RendererIP,
+		"DstAddr":                    RendererIP,
+		"SamplerAddress":             RendererIP,
+		"NextHop":                    RendererIP,
+		"BgpNextHop":                 RendererIP,
+		"MplsLabelIp":                RendererIP,
+		"MplsIp":                     RendererIP,
+		"Ipv6RoutingHeaderAddresses": RendererIP,
 	}
 
 	defaultRenderers = map[string]RenderFunc{
@@ -316,6 +330,85 @@ func DateTimeRenderer(msg *ProtoProducerMessage, fieldName string, data interfac
 // DateTimeNanoRenderer formats a Unix timestamp in nanoseconds using RFC3339Nano.
 func DateTimeNanoRenderer(msg *ProtoProducerMessage, fieldName string, data interface{}) interface{} {
 	return dateTimeFormatRenderer(time.RFC3339Nano, true)(msg, fieldName, data)
+}
+
+// appendIPBytes 把字节形式的 IP 地址直接追加到 dst。
+// 与 RenderIP 的输出逐字节一致：长度非 4/16 时返回空串（RenderIP 亦返回空串）。
+func appendIPBytes(dst []byte, b []byte) []byte {
+	if len(b) != net.IPv4len && len(b) != net.IPv6len {
+		return dst
+	}
+	addr, ok := netip.AddrFromSlice(b)
+	if !ok {
+		return dst
+	}
+	return addr.AppendTo(dst)
+}
+
+// appendDateTimeNanoField 把纳秒时间戳按 layout 直接追加到 dst。
+// 与 dateTimeFormatRenderer(layout, nanos=true) 输出一致（含时区处理）。
+func appendDateTimeNanoField(dst []byte, ns uint64, layout string) []byte {
+	ts := time.Unix(int64(ns)/1e9, int64(ns)%1e9)
+	return ts.In(rendererLocation).AppendFormat(dst, layout)
+}
+
+// renderAppendable 把可直写列渲染为字符串形态，供 text/JSON 与 CSVValues 使用。
+// 这些列的直写旁路与 renderer 输出逐字节一致，故此处复用 renderer 结果。
+func renderAppendable(cf *compiledField, v reflect.Value) string {
+	switch cf.appendKind {
+	case appendIP:
+		return RenderIP(v.Bytes())
+	case appendDateTimeNano:
+		return string(appendDateTimeNanoField(nil, v.Uint(), cf.appendLayout))
+	}
+	return ""
+}
+
+// appendKindFor 判定某列能否走直写旁路：
+//   - renderer 为内建 "ip"，且字段是字节切片 → appendIP
+//   - renderer 为内建 "datetimenano:<layout>"，且字段是 uint64/int64 → appendDateTimeNano
+//
+// 其余情况（含用户自定义 renderer）一律返回 appendNone，保持原字符串路径。
+func appendKindFor(id RendererID, k reflect.Kind) (appendKind, string) {
+	name, layout, hasLayout := strings.Cut(string(id), ":")
+	switch RendererID(name) {
+	case RendererIP:
+		if k == reflect.Slice {
+			return appendIP, ""
+		}
+	case RendererDateTimeNano:
+		// 仅纳秒语义有直写路径；秒语义的 dataToTime 只接受 uint64/int64，
+		// 这里同样只对这两种字段形态开启，保证行为完全一致。
+		if hasLayout && (k == reflect.Uint64 || k == reflect.Int64) {
+			return appendDateTimeNano, layout
+		}
+	}
+	return appendNone, ""
+}
+
+// builtinRendererMatches 校验登记的 renderer 标识与实际使用的函数是否都是内建实现。
+// 函数值不能直接比较，故用 reflect.ValueOf(...).Pointer() 比对函数入口地址。
+func builtinRendererMatches(id RendererID, fn RenderFunc) bool {
+	if fn == nil {
+		return false
+	}
+	name, _, hasLayout := strings.Cut(string(id), ":")
+	switch RendererID(name) {
+	case RendererIP:
+		return sameFuncPtr(fn, IPRenderer)
+	case RendererDateTimeNano:
+		if !hasLayout {
+			return false
+		}
+		// 自定义 layout 对应的是闭包，无法按入口地址比对；此时要求调用方
+		// 未改动过该列的 render（由 mapFormat 保证），放行。
+		return true
+	}
+	return false
+}
+
+func sameFuncPtr(a, b any) bool {
+	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
 }
 
 // resolveRenderer resolves a renderer identifier to its function.
