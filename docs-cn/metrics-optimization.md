@@ -3,7 +3,7 @@
 > 状态：已实现、基准验证并完成现网部署验证（整机 CPU ~60%，队列稳定）
 > 影响面：`metrics/`（指标埋点）、`producer/proto`（映射与 CSV 渲染）、`format/csv`、`transport/netcat`（批量写），以及 `pkg/goflow2/config`、`app`、`collector`、`httpserver` 的开关接线
 > 目标：在不改变对外语义与输出字节的前提下，消除收包热路径的无谓开销（分配、反射、系统调用），并支持按需整体关闭指标统计
-> 后续可继续优化的点见 8.12
+> 后续可继续优化的点见 8.11
 
 ## 1. 背景
 
@@ -277,7 +277,7 @@ GOFLOW2_PPROF=false bash run.sh restart
 >
 > 终点：四批优化落地并部署验证（见 8.8），**整机 CPU 降至约 60%，接收队列多数时间 < 1000，吞吐与消费基本持平**。
 >
-> 本节记录逐轮剖析证据、已落地优化与基准，另含排障记录（8.9）、工具（8.10）与**可继续优化的点（8.12）**。
+> 本节记录逐轮剖析证据、已落地优化与基准，另含排障记录（8.9）与**可继续优化的点（8.11）**。
 
 | 批次 | 内容 | 小节 |
 |---|---|---|
@@ -476,56 +476,67 @@ cf.directScalar = cf.hasField && !cf.isArray && !cf.hasRenderer && scalarDirect(
 
 即：瓶颈已从 goflow2 自身移走，流水线可与收包速率持平，CPU 获得约 40% 的整机余量用于流量增长。
 
-### 8.9 排障记录：CSV 时间字段「丢失毫秒」（非缺陷）
+### 8.9 排障记录：CSV 时间字段「起止相同 / 毫秒丢失」
 
-**现象**：现网多数记录输出 `2026-10-17 12:07:19`，少数带毫秒（`.8`、`.83`）。
+**现象**：现网多数记录输出 `time_flow_start_ns == time_flow_end_ns`，部分记录毫秒位为 0，少数出现 start > end。
 
-**结论：不是缺陷，也不是本轮优化引入的回归。** 用 HEAD（改动前）与当前二进制对同一构造包做 A/B，输出**逐字节一致**（见 8.3 回归测试）。
+**结论：不是缺陷，也不是优化引入的回归。** 用 HEAD（改动前）与当前二进制对同一构造包做 A/B，输出**逐字节一致**。
 
-两个叠加原因：
+#### 定位方法：读 `/store` 而非抓包
 
-1. **`.999` 是 Go 的"省略末尾零"布局**。`2006-01-02 15:04:05.999` 在毫秒为 0 时整段不输出；`.000` 才是固定 3 位。旧的 `datetimenano`（RFC3339Nano）同样会省略末尾零。
-2. **亚秒精度取决于设备上报的字段与粒度**。关键算式（`producer/proto/producer_nf.go:521`）：
-
-   ```go
-   timeDiff := (uptimeNs - uint64(timeFirstSwitched)*1e6) // 整数"毫秒"之差
-   flowMessage.TimeFlowStartNs = baseTimeNs - timeDiff    // baseTimeNs = UnixSeconds*1e9（整秒）
-   ```
-
-   输出毫秒位 = `(uptime − firstSwitched) mod 1000`。
-
-| 设备类型 | 模板含 FIRST/LAST_SWITCHED | switched 粒度 | 输出毫秒 |
-|---|---|---|---|
-| A | 否 | — | 无（用报文头 `unixSeconds`，整秒） |
-| B | 是 | **秒级**（值 %1000 == 0） | 无 |
-| C | 是 | **毫秒级**（值 %1000 ≠ 0） | 有 |
-
-三者**都是 NetFlow v9**；版本相同不代表模板字段相同。判读特征：`start` 比 `end` 早**整数秒**（如 63s/73s）→ B 型。
-
-**处理建议**：
-
-- 格式对齐（立即可做）：把 layout 由 `.999` 改为 `.000`，列宽固定为 3 位，下游解析稳定。**注意这只是格式对齐，不会给 B 型设备补出真实毫秒**。
-- 数值精度（需设备侧）：B 型设备的亚秒信息在源数据中即不存在，需网络侧确认设备上报配置。
-
-**数据质量旁证**：观察到 `time_flow_start_ns > time_flow_end_ns` 的记录（如 `12:12:01 | 12:11:57.83`），属设备侧时钟/上报异常，与 goflow2 无关，建议单独排查。
-
-### 8.10 工具：`cmd/nfdump`（模板诊断）
-
-用于逐设备核实上表 A/B/C 型。解析 NetFlow v9 报文头与模板，打印字段清单并判定是否含时间字段：
+`/store` 端点返回模板存储的完整 JSON 快照（含每条模板的字段清单），比抓包更可靠：不依赖模板刷新周期，一次即可拿到**全量**存活模板。
 
 ```bash
-# 抓某设备的原始包（模板非每包都带，需抓够）
-tcpdump -i any -nn -s0 -c20 'udp dst port 2055 and src host 120.204.194.2' -X > /tmp/dev1.hex
-dist/bin/nfdump < /tmp/dev1.hex
+curl -s localhost:18080/store > /tmp/store.json
 ```
 
-> ⚠️ 命名与 NetFlow 领域经典的 C 工具 `nfdump` **同名但无关**，本工具仅用于解码模板，不做流量统计。
+结构为 `{"sampling-rates":{}, "templates":{"<router>":{"<version>/<obsDomain>/<templateId>": {...fields...}}}}`，其中 `router` 形如 `IP:源端口`，字段 `type` 为 NetFlow 字段类型号（`FIRST_SWITCHED=22`、`LAST_SWITCHED=21`）。
 
-### 8.11 代码注释约定
+判定脚本：
+
+```bash
+python3 -c "
+import json
+d=json.load(open('/tmp/store.json'))['templates']
+for r,t in sorted(d.items()):
+    miss=[]
+    for k,v in t.items():
+        ty=[f['type'] for f in v.get('fields',[])]
+        if 22 not in ty: miss.append(k+'(缺FIRST)')
+        elif 21 not in ty: miss.append(k+'(缺LAST)')
+    print(f'{r:<24} {len(t):>2}模板  ' + ('正常' if not miss else ' '.join(miss)))
+"
+```
+
+#### 现网实测结果
+
+全量 296 个模板中 **280 个正常、16 个异常，全部来自 `117.185.127.1/2`（源端口 2055）**——其 8 个模板（obsDomain `16711685`–`16711688` × templateId `270/271`）**只含 `LAST_SWITCHED`，缺 `FIRST_SWITCHED`**。
+
+#### 三种现象的完整归因
+
+| 现象 | 根因 | 性质 |
+|---|---|---|
+| start=end，毫秒非零（如 `.478`） | **单包短流**：设备上报 first == last（实测 `117.184.216.1` 的 306 条流中 292 条属此类，占 95.4%） | ✅ 正常 |
+| start=end，毫秒为 0（`.000`） | 模板**缺 `FIRST_SWITCHED`** → start 用报文导出时间兜底（整秒） | ❌ 设备侧模板缺字段 |
+| start > end | 同上，且导出时间晚于 `LAST_SWITCHED` 实算值 | ❌ 同一原因 |
+
+相关代码路径（`producer/proto/producer_nf.go`）：
+
+```go
+flowMessage.TimeFlowStartNs = baseTimeNs   // 默认 = 报文 unixSeconds（整秒，毫秒位恒为 0）
+flowMessage.TimeFlowEndNs   = baseTimeNs
+// 仅当模板含 FIRST/LAST_SWITCHED 时才覆盖
+```
+
+> **模板含时间字段且设备按毫秒上报时**（其余 18 台设备），输出毫秒正常，无需处理。
+
+**处置**：将「`117.185.127.1/2` 模板缺 `FIRST_SWITCHED`(type 22, len 4)」提交网络侧补齐即可，属设备配置问题，goflow2 侧无需改动（当前降级行为安全：不会崩溃、不丢数据）。
+
+### 8.10 代码注释约定
 
 本文件涉及的**性能关键路径**（`producer/proto`、`format/csv`、`transport/netcat` 中的反射映射、CSV 渲染、netcat 批量写）统一使用**中文注释**，说明优化动机与行为约束；其余公共 API 的文档注释保持英文。
 
-### 8.12 可继续优化的点（按预估收益排序）
+### 8.11 可继续优化的点（按预估收益排序）
 
 > 下列均为**未实施**项，基于优化前 profile 的剩余热点。收益估算基于当时占比，实际需重新剖析确认。
 
@@ -543,7 +554,7 @@ dist/bin/nfdump < /tmp/dev1.hex
 
 **验证前提**：任何一项动手前，先用第 7 节的 pprof 重新采集**当前部署版本**的 profile（确认 Build ID 已变化），避免在已解决的热点上重复投入。
 
-### 8.13 已定位的累积型问题：模板 TTL 默认为 0（永不过期）
+### 8.12 已定位的累积型问题：模板 TTL 默认为 0（永不过期）
 
 **现象**：部署后短时间内 CPU 正常，但**运行数小时后 CPU 持续爬升**。
 
@@ -593,4 +604,4 @@ curl -s localhost:18080/metrics | egrep 'template_entries|sampling_rate_entries'
 | `docs-cn/mapping-reference.md` | `mapping.yaml` 字段与 renderer 配置参考（时间列 layout 见 8.9） |
 | `docs-cn/logging.md` | 日志轮转与排障 |
 
-> 后续优化项已统一收敛到 **8.12**，避免多处维护。
+> 后续优化项已统一收敛到 **8.11**，避免多处维护。
