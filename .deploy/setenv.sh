@@ -73,6 +73,18 @@
 # [[ -z "${GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS=1
 # [[ -z "${GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS=1
 
+# ── Go 运行时调优（可选）────────────────────────────────────
+# 背景：现网实测分配速率约 377 MiB/s、GC 673 次/分钟，且"堆只涨不降"
+#（Go 未及时把页归还 OS），内存会单调增长直至内核 OOM kill。
+# GOGC 调低 → GC 更积极 → 内存下降、CPU 上升（用 CPU 换内存）。
+# GOMEMLIMIT 为软上限：接近时 Go 自动加大 GC 力度，而非任由堆膨胀。
+# 这两项是 Go 运行时环境变量，不需要重新编译；run.sh 会在启动前透传。
+#
+# GOGC      默认 100；40 约可把分配速率与 GC 频率减半
+# GOMEMLIMIT 建议设为整机内存的 60~70%，如 16GiB 机器设 10GiB
+# [[ -z "${GOGC:-}" ]] && export GOGC=40
+# [[ -z "${GOMEMLIMIT:-}" ]] && export GOMEMLIMIT=2GiB
+
 # ── 设备统计参数（可选，均有默认值，可不设则使用默认）───────────
 # 统计端点前缀，默认 /device-stats（实际的 3 个端点：/device-list、
 # <前缀>/hourly、<前缀>/daily）

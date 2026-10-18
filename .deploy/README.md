@@ -100,6 +100,17 @@ bash run.sh start
 | `GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS` | `false` | 访问模板时是否续期；取值过小会反复丢模板并触发 fallback 解码，请勿低于模板刷新周期 |
 | `GOFLOW2_SAMPLING_TTL` | `0` | 采样率 TTL；**`0` 表示永不过期**，建议设 `1h` |
 | `GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS` | `false` | 访问采样率时是否续期 |
+| `GOGC` | `100` | Go GC 目标百分比，调低更积极（用 CPU 换内存）。高分配速率场景建议 `40` |
+| `GOMEMLIMIT` | 无 | Go 运行时软内存上限，如 `2GiB`/`10GiB`。接近时自动加大 GC 力度，避免堆膨胀被内核 OOM kill；建议设为整机内存的 60–70% |
+
+> `GOGC` / `GOMEMLIMIT` 是 Go 运行时环境变量（由 run.sh 在启动前透传），修改后需重启生效，无需重新编译。
+>
+> 高分配速率场景（现网实测约 377 MiB/s、GC 673 次/分钟）建议：
+> ```
+> export GOGC=40
+> export GOMEMLIMIT=2GiB
+> ```
+> 内存下降、CPU 略升——当 CPU 有余量时是划算的取舍。
 
 ## 示例：设备统计查询
 

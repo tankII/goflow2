@@ -209,6 +209,7 @@ _build_transport_args() {
 }
 
 # ── 设备统计参数构建（可选，均有默认值）─────────────────────
+# ── 设备统计端点参数 ─────────────────────────────────────────
 _build_device_stats_args() {
     local args=""
     if [[ -n "${GOFLOW2_DEVICE_STATS_PATH:-}" ]]; then
@@ -220,6 +221,12 @@ _build_device_stats_args() {
     if [[ -n "${GOFLOW2_DEVICE_RETENTION_DAILY:-}" ]]; then
         args="${args} -device.retention.daily ${GOFLOW2_DEVICE_RETENTION_DAILY}"
     fi
+    echo "$args"
+}
+
+# ── HTTP 端点路径参数（接收队列 / 发送队列 / Web 面板）──────
+_build_endpoint_args() {
+    local args=""
     if [[ -n "${GOFLOW2_QUEUE_STATS_PATH:-}" ]]; then
         args="${args} -queue.stats.path ${GOFLOW2_QUEUE_STATS_PATH}"
     fi
@@ -229,6 +236,13 @@ _build_device_stats_args() {
     if [[ -n "${GOFLOW2_WEB_PATH:-}" ]]; then
         args="${args} -web.path ${GOFLOW2_WEB_PATH}"
     fi
+    echo "$args"
+}
+
+# ── 全局开关参数（指标 / pprof）──────────────────────────────
+# 仅负责把开关传给进程：启动摘要中它们已有独立行（metrics / pprof），此处不再重复输出。
+_build_switch_args() {
+    local args=""
     case "${GOFLOW2_METRICS:-}" in
         1|true)  args="${args} -metrics" ;;
         0|false) args="${args} -metrics=false" ;;
@@ -241,9 +255,14 @@ _build_device_stats_args() {
         "")      ;; # 未设置 → 跳过（默认关闭）
         *)       args="${args} -pprof=${GOFLOW2_PPROF}" ;;
     esac
-    # 模板/采样率 TTL：不设则沿用 goflow2 默认值 0，即"永不过期"。
-    # 长期运行建议设为 1h（模板标准刷新周期 60s，留足余量），
-    # 否则模板条目会随设备/观测域增长持续累积，并放大模板查询的锁竞争。
+    echo "$args"
+}
+# ── 模板/采样率存储参数（TTL，决定条目是否过期清理）────────────
+# 不设则沿用 goflow2 默认值 0，即"永不过期"。长期运行建议设为 1h
+# （NetFlow v9 / IPFIX 模板的标准刷新周期为 60s，留足余量）；否则模板条目
+# 会随设备数 × 观测域持续累积，并放大模板查询的锁竞争。
+_build_store_args() {
+    local args=""
     if [[ -n "${GOFLOW2_TEMPLATES_TTL:-}" ]]; then
         args="${args} -templates.ttl ${GOFLOW2_TEMPLATES_TTL}"
     fi
@@ -359,6 +378,18 @@ do_start() {
     if [[ -n "$DEVICE_ARGS" ]]; then
         echo "    device stats:${DEVICE_ARGS}"
     fi
+    local ENDPOINT_ARGS
+    ENDPOINT_ARGS="$(_build_endpoint_args)"
+    if [[ -n "$ENDPOINT_ARGS" ]]; then
+        echo "    endpoint args:${ENDPOINT_ARGS}"
+    fi
+    local STORE_ARGS
+    STORE_ARGS="$(_build_store_args)"
+    if [[ -n "$STORE_ARGS" ]]; then
+        echo "    store args  :${STORE_ARGS}"
+    fi
+    local SWITCH_ARGS
+    SWITCH_ARGS="$(_build_switch_args)"
     local LOG_ARGS
     LOG_ARGS="$(_build_log_args)"
     if [[ -n "$LOG_ARGS" ]]; then
@@ -381,6 +412,17 @@ do_start() {
         fi
     done
 
+    # Go 运行时调优：GOGC 降低 GC 频率（用 CPU 换内存），GOMEMLIMIT 为软上限，
+    # 避免高分配速率下堆持续膨胀直到被内核 OOM kill。
+    if [[ -n "${GOGC:-}" ]]; then
+        export GOGC
+        echo "    GOGC      : ${GOGC}"
+    fi
+    if [[ -n "${GOMEMLIMIT:-}" ]]; then
+        export GOMEMLIMIT
+        echo "    GOMEMLIMIT: ${GOMEMLIMIT}"
+    fi
+
     exec "$BINARY" \
         -listen "$LISTEN" \
         -format "$FORMAT" \
@@ -391,6 +433,9 @@ do_start() {
         ${KAFKA_ARGS:-} \
         ${TRANSPORT_ARGS:-} \
         ${DEVICE_ARGS:-} \
+        ${ENDPOINT_ARGS:-} \
+        ${STORE_ARGS:-} \
+        ${SWITCH_ARGS:-} \
         ${LOG_ARGS:-} \
         ${USER_ARGS:-} \
         < /dev/null &
