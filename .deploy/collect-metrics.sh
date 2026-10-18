@@ -136,12 +136,14 @@ snapshot() {
     if [[ -r "$PID_FILE" ]]; then
         local pid; pid="$(cat "$PID_FILE" 2>/dev/null)"
         if [[ -n "$pid" ]] && [[ -d "/proc/$pid" ]]; then
-            local rss_kb cpu_pct
-            rss_kb=$(awk '/VmRSS/{print $2}' "/proc/$pid/status" 2>/dev/null)
+            local rss_kb hwm_kb cpu_pct
+            # /proc/<pid>/status 的 VmRSS / VmHWM 单位是 KiB，需换算后再展示
+            rss_kb=$(awk '/^VmRSS:/{print $2}' "/proc/$pid/status" 2>/dev/null)
+            hwm_kb=$(awk '/^VmHWM:/{print $2}' "/proc/$pid/status" 2>/dev/null)
             cpu_pct=$(ps -o %cpu= -p "$pid" 2>/dev/null | tr -d ' ')
             local thr; thr=$(ls "/proc/$pid/task" 2>/dev/null | wc -l)
-            printf "OS: pid=%s  RSS=%s MiB  CPU=%s%%  线程=%s\n" \
-                   "$pid" "${rss_kb:-?}" "${cpu_pct:-?}" "$thr"
+            printf "OS: pid=%s  RSS=%s MiB  峰值(VmHWM)=%s MiB  CPU=%s%%  线程=%s\n" \
+                   "$pid" "$(( ${rss_kb:-0} / 1024 ))" "$(( ${hwm_kb:-0} / 1024 ))" "${cpu_pct:-?}" "$thr"
         fi
     fi
     free -m | awk 'NR==1||NR==2{printf "内存: %s\n", $0}'
