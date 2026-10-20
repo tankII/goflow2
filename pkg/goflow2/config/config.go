@@ -32,8 +32,11 @@ type Config struct {
 	StoreHTTPPath string
 
 	DeviceStatsPath string
-	DeviceHourlyTTL time.Duration
-	DeviceDailyTTL  time.Duration
+
+	// TemplatesHTTPPath is the path of the template browser endpoint.
+	TemplatesHTTPPath string
+	DeviceHourlyTTL   time.Duration
+	DeviceDailyTTL    time.Duration
 
 	QueueStatsPath string
 
@@ -71,6 +74,7 @@ func BindFlags(fs *flag.FlagSet) *Config {
 	fs.StringVar(&cfg.Addr, "addr", ":8080", "HTTP server address")
 	fs.StringVar(&cfg.StoreHTTPPath, "store.http.path", "/store", "Flowstore HTTP path")
 	fs.StringVar(&cfg.DeviceStatsPath, "device.stats.path", "/device-stats", "Device statistics base path")
+	fs.StringVar(&cfg.TemplatesHTTPPath, "templates.http.path", "/templates", "Template browser HTTP path")
 	fs.DurationVar(&cfg.DeviceHourlyTTL, "device.retention.hourly", 72*time.Hour, "Hourly device stats retention (hours)")
 	fs.DurationVar(&cfg.DeviceDailyTTL, "device.retention.daily", 90*24*time.Hour, "Daily device stats retention (hours, e.g. 2160h for 90 days)")
 	fs.StringVar(&cfg.QueueStatsPath, "queue.stats.path", "/queue-stats", "Receive queue usage HTTP path")

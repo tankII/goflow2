@@ -74,6 +74,17 @@ func (m *Manager) Errors() <-chan error {
 	return m.errCh
 }
 
+// TemplateStore returns the template store created by NewTemplateStore, or nil
+// when no template store has been opened. Callers use it for read-only
+// introspection (such as the HTTP template browser); the persisted document
+// format is intentionally left untouched by this path.
+func (m *Manager) TemplateStore() netflow.ManagedTemplateStore {
+	if m == nil {
+		return nil
+	}
+	return m.templateStore
+}
+
 // NewSamplingRateStore creates and preloads a sampling-rate store with JSON hooks.
 func (m *Manager) NewSamplingRateStore(opts ...samplingrate.FlowStoreOption) (samplingrate.Store, error) {
 	if m == nil {

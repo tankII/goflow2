@@ -20,6 +20,8 @@ import (
 type Config struct {
 	Addr                 string
 	StoreHTTPPath        string
+	TemplatesPath        string
+	TemplateSource       TemplateSource
 	DeviceStatsPath      string
 	QueueStatsPath       string
 	TransportStatsPath   string
@@ -126,6 +128,7 @@ type dashboardConfig struct {
 	HealthPath         string                    `json:"healthPath"`
 	MetricsPath        string                    `json:"metricsPath"`
 	StorePath          string                    `json:"storePath"`
+	TemplatesPath      string                    `json:"templatesPath"`
 	QueueStatsPath     string                    `json:"queueStatsPath"`
 	TransportStatsPath string                    `json:"transportStatsPath"`
 	DeviceStatsPath    string                    `json:"deviceStatsPath"`
@@ -225,6 +228,14 @@ func New(cfg Config, store StoreSource, isCollecting func() bool) http.Handler {
 	mux.HandleFunc(deviceBase+"/daily", metrics.DeviceDailyHandler(cfg.RouterCounter))
 	mux.HandleFunc(deviceListPath, metrics.DeviceListHandler(cfg.RouterCounter))
 
+	// 模板浏览端点与 /store 相互独立：/store 输出的同时也是落盘的持久化
+	// 文档，其结构必须保持稳定，因此带字段释义的展示视图单独走一个接口。
+	templatesPath := ""
+	if cfg.TemplateSource != nil {
+		templatesPath = orDefault(cfg.TemplatesPath, "/templates")
+		mux.HandleFunc(templatesPath, TemplateHandler(cfg.TemplateSource))
+	}
+
 	queueStatsPath := ""
 	if cfg.QueueStatsSource != nil {
 		queueStatsPath = orDefault(cfg.QueueStatsPath, "/queue-stats")
@@ -242,6 +253,7 @@ func New(cfg Config, store StoreSource, isCollecting func() bool) http.Handler {
 			HealthPath:         "/__health",
 			MetricsPath:        "/metrics",
 			StorePath:          storePath,
+			TemplatesPath:      templatesPath,
 			QueueStatsPath:     queueStatsPath,
 			TransportStatsPath: transportStatsPath,
 			DeviceStatsPath:    deviceStatsPath,

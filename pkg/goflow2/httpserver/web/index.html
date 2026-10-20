@@ -131,6 +131,41 @@
   .detail{ flex:1 1 auto; min-height:140px; margin-top:12px; border:1px solid var(--rule); border-radius:2px; overflow:auto; }
   .detail thead th{ position:sticky; top:0; background:var(--panel); }
 
+  /* ---- 视图页签（概览 / 模板） ---- */
+  .viewtabs{ display:inline-flex; border:1px solid var(--rule-strong); border-radius:2px; overflow:hidden; }
+  .viewtab{ border:none; border-right:1px solid var(--rule-strong); border-radius:0;
+            background:var(--panel); padding:4px 14px; font-size:12px; }
+  .viewtab:last-child{ border-right:none; }
+  .viewtab.active{ background:var(--ink); color:var(--on-ink); border-color:var(--ink); }
+
+  /* ---- 模板浏览器：设备 → 模板 → 字段 三级 ---- */
+  .tpl-browser{ display:grid; grid-template-columns:minmax(240px,300px) minmax(260px,340px) 1fr; gap:14px;
+                align-items:start; }
+  .tpl-col{ background:var(--panel); border:1px solid var(--rule); border-radius:2px; overflow:hidden;
+            display:flex; flex-direction:column; max-height:calc(100vh - 150px); }
+  .tpl-col-head{ display:flex; align-items:center; gap:8px; padding:9px 14px; border-bottom:1px solid var(--rule);
+                 font-weight:600; font-size:13px; flex:0 0 auto; }
+  .tpl-col-head::before{ content:""; width:3px; height:13px; background:var(--accent); display:inline-block; }
+  .tpl-col-head .panel-note{ margin-left:auto; }
+  .tpl-list{ overflow:auto; min-height:0; }
+  .tpl-item{ display:flex; align-items:center; gap:8px; padding:7px 14px; cursor:pointer;
+             border-bottom:1px solid var(--rule); }
+  .tpl-item:last-child{ border-bottom:none; }
+  .tpl-item:hover{ background:var(--panel2); }
+  .tpl-item.active{ background:var(--panel2); box-shadow:inset 3px 0 0 var(--accent); }
+  .tpl-item .t-name{ font-family:var(--mono); font-size:12px; }
+  .tpl-item .t-sub{ margin-left:auto; color:var(--muted); font-size:11px; font-family:var(--mono); }
+  .tpl-search{ padding:8px 14px; border-bottom:1px solid var(--rule); flex:0 0 auto; }
+  .tpl-search input{ width:100%; font-family:var(--mono); font-size:12px; color:var(--ink);
+                     background:var(--panel2); border:1px solid var(--rule-strong); border-radius:2px; padding:4px 8px; }
+  .field-zh{ color:var(--ink); }
+  .field-name{ font-family:var(--mono); font-size:12px; color:var(--accent); }
+  .tpl-meta{ padding:9px 14px; border-bottom:1px solid var(--rule); color:var(--muted); font-size:12px; flex:0 0 auto; }
+  .tpl-meta b{ font-family:var(--mono); color:var(--ink); font-weight:600; }
+  .zh-legend{ display:inline-flex; align-items:center; gap:6px; font-size:12px; }
+  .tpl-hint{ padding:7px 14px; border-bottom:1px solid var(--rule); font-size:11px;
+             color:var(--muted); line-height:1.5; flex:0 0 auto; background:var(--panel2); }
+  .tpl-hint b{ color:var(--ink); font-weight:600; }
 
   @media (prefers-reduced-motion: reduce){ *{ transition:none !important; } }
 </style>
@@ -151,6 +186,10 @@
     <span class="readout">传输<b id="transport">—</b></span>
     <span class="readout">格式<b id="format">—</b></span>
   </div>
+  <div class="viewtabs" role="tablist">
+    <button class="viewtab active" id="tab-overview" role="tab" aria-selected="true">概览</button>
+    <button class="viewtab" id="tab-templates" role="tab" aria-selected="false">模板</button>
+  </div>
   <button id="theme-toggle" title="切换到深色">深色</button>
   <button id="fields-toggle">字段 (0)</button>
   <div class="links" id="links"></div>
@@ -166,6 +205,7 @@
   </div>
 </header>
 <main>
+  <div id="view-overview">
   <section class="panel" id="flowfields" hidden>
     <div class="panel-head"><span>输出字段</span><span class="panel-note muted">flow 记录输出列</span></div>
     <div id="fields"></div>
@@ -186,6 +226,25 @@
   </section>
   </div>
 
+  <div id="view-templates" hidden>
+    <div class="tpl-browser">
+      <section class="tpl-col">
+        <div class="tpl-col-head"><span>设备</span><span class="panel-note muted" id="tpl-dev-count"></span></div>
+        <div class="tpl-search"><input id="tpl-filter" type="search" placeholder="按 IP 或端口筛选…" autocomplete="off"></div>
+        <div class="tpl-list" id="tpl-devices"></div>
+      </section>
+      <section class="tpl-col">
+        <div class="tpl-col-head"><span>模板</span><span class="panel-note muted" id="tpl-count"></span></div>
+        <div class="tpl-list" id="tpl-templates"></div>
+      </section>
+      <section class="tpl-col">
+        <div class="tpl-col-head"><span>字段详情</span><span class="panel-note muted" id="tpl-field-count"></span></div>
+        <div class="tpl-meta" id="tpl-meta" hidden></div>
+        <div class="tpl-hint" id="tpl-hint" hidden></div>
+        <div class="tpl-list" id="tpl-fields"></div>
+      </section>
+    </div>
+  </div>
 </main>
 
 <div id="overlay" class="overlay"></div>
@@ -566,6 +625,160 @@ document.getElementById("theme-toggle").addEventListener("click", function () {
   applyTheme(cur === "dark" ? "light" : "dark");
 });
 
+
+/* ================= 模板浏览器 ================= */
+
+var tplDoc = null;          // 接口返回的按设备分组模板
+var tplDevIdx = -1;        // 选中的设备下标
+var tplTplIdx = -1;        // 选中的模板下标
+var tplFilter = "";        // 设备筛选词
+
+function tplFilteredDevices() {
+  if (!tplDoc || !tplDoc.routers) return [];
+  var q = tplFilter.trim().toLowerCase();
+  if (!q) return tplDoc.routers;
+  return tplDoc.routers.filter(function (r) {
+    return (r.router || "").toLowerCase().indexOf(q) >= 0
+        || (r.ip || "").toLowerCase().indexOf(q) >= 0;
+  });
+}
+
+function renderTplDevices() {
+  var box = document.getElementById("tpl-devices");
+  box.textContent = "";
+  var list = tplFilteredDevices();
+
+  document.getElementById("tpl-dev-count").textContent =
+    tplFilter ? list.length + " / " + (tplDoc && tplDoc.routers ? tplDoc.routers.length : 0) : "";
+
+  if (list.length === 0) {
+    box.appendChild(el("div", "empty", CFG.templatesPath ? "没有匹配的设备。" : "模板浏览未启用。"));
+    return;
+  }
+  list.forEach(function (r) {
+    var i = tplDoc.routers.indexOf(r);
+    var item = el("div", "tpl-item" + (i === tplDevIdx ? " active" : ""));
+    item.appendChild(el("span", "t-name", esc(r.ip || r.router)));
+    item.appendChild(el("span", "t-sub", (r.templates || []).length + " 个"));
+    item.addEventListener("click", function () { tplDevIdx = i; tplTplIdx = -1; renderTemplates(); });
+    box.appendChild(item);
+  });
+}
+
+function renderTplTemplates() {
+  var box = document.getElementById("tpl-templates");
+  box.textContent = "";
+  var list = tplFilteredDevices();
+  var dev = (tplDevIdx >= 0 && tplDevIdx < tplDoc.routers.length) ? tplDoc.routers[tplDevIdx] : null;
+  if (dev && list.indexOf(dev) < 0) dev = null;   // 筛选后原选中项可能已被过滤掉
+
+  var tpls = dev ? (dev.templates || []) : [];
+  document.getElementById("tpl-count").textContent = dev ? tpls.length : "";
+
+  if (!dev) { box.appendChild(el("div", "empty", "请先选择左侧设备。")); return; }
+  if (tpls.length === 0) { box.appendChild(el("div", "empty", "该设备暂无模板。")); return; }
+
+  tpls.forEach(function (t, i) {
+    var item = el("div", "tpl-item" + (i === tplTplIdx ? " active" : ""));
+    item.appendChild(el("span", "t-name", esc(t.key)));
+    item.appendChild(el("span", "t-sub", t.fieldCount + " 字段"));
+    item.addEventListener("click", function () { tplTplIdx = i; renderTemplates(); });
+    box.appendChild(item);
+  });
+}
+
+function renderTplFields() {
+  var box = document.getElementById("tpl-fields");
+  var meta = document.getElementById("tpl-meta");
+  box.textContent = "";
+  meta.hidden = true;
+  document.getElementById("tpl-field-count").textContent = "";
+
+  var list = tplFilteredDevices();
+  var dev = (tplDevIdx >= 0 && tplDevIdx < tplDoc.routers.length) ? tplDoc.routers[tplDevIdx] : null;
+  if (dev && list.indexOf(dev) < 0) dev = null;
+  var tpls = dev ? (dev.templates || []) : [];
+  var tpl = (tplTplIdx >= 0 && tplTplIdx < tpls.length) ? tpls[tplTplIdx] : null;
+
+  if (!tpl) { box.appendChild(el("div", "empty", "请选择一个模板以查看字段详情。")); return; }
+
+  meta.hidden = false;
+  meta.textContent = "";
+  [["设备", dev.router], ["版本", "v" + tpl.version], ["观测域", tpl.obsDomainId],
+   ["模板 ID", tpl.templateId], ["字段数", tpl.fieldCount]].forEach(function (kv) {
+    meta.appendChild(document.createTextNode(kv[0] + " "));
+    meta.appendChild(el("b", "", kv[1]));
+    meta.appendChild(document.createTextNode("    "));
+  });
+  document.getElementById("tpl-field-count").textContent = (tpl.fields || []).length + " 个字段";
+
+  // FIRST/LAST_SWITCHED 容易被误读成墙上时钟，这里明确写出换算方式
+  var hint = document.getElementById("tpl-hint");
+  var hasUptime = (tpl.fields || []).some(function (f) { return f.type === 21 || f.type === 22; });
+  if (hasUptime) {
+    hint.hidden = false;
+    hint.textContent = "提示：流开始/结束时刻是以设备 uptime 为基准的毫秒值，并非墙上时钟，"
+      + "也不同于报文头的 sysUptime 字段；采集时按 导出墙钟时间 − (sysUptime − 该字段值) 换算为绝对时间。";
+  } else {
+    hint.hidden = true;
+  }
+
+  var table = el("table");
+  var thead = el("thead"), htr = el("tr");
+  ["#", "type", "英文名", "中文含义", "长度"].forEach(function (label, i) {
+    htr.appendChild(el("th", i === 4 ? "num" : "", label));
+  });
+  thead.appendChild(htr); table.appendChild(thead);
+  var tb = el("tbody");
+  (tpl.fields || []).forEach(function (f) {
+    var tr = el("tr");
+    tr.appendChild(el("td", "muted mono", String(f.index)));
+    tr.appendChild(el("td", "num muted mono", String(f.type)));
+    tr.appendChild(el("td", "field-name", esc(f.name)));
+    tr.appendChild(el("td", "field-zh", esc(f.zh)));
+    tr.appendChild(el("td", "num mono", String(f.length)));
+    tb.appendChild(tr);
+  });
+  table.appendChild(tb); box.appendChild(table);
+}
+
+function renderTemplates() {
+  if (!tplDoc) tplDoc = { routers: [] };
+  renderTplDevices();
+  renderTplTemplates();
+  renderTplFields();
+}
+
+function loadTemplates() {
+  if (!CFG.templatesPath) { tplDoc = { routers: [] }; renderTemplates(); return; }
+  getJSON(CFG.templatesPath).then(function (doc) {
+    tplDoc = doc || { routers: [] };
+    renderTemplates();
+  }).catch(function () {
+    tplDoc = { routers: [] };
+    renderTemplates();
+    document.getElementById("tpl-devices").textContent = "";
+    document.getElementById("tpl-devices").appendChild(el("div", "empty", "无法读取模板列表，稍后重试。"));
+  });
+}
+
+function switchView(name) {
+  var isTpl = name === "templates";
+  document.getElementById("view-overview").hidden = isTpl;
+  document.getElementById("view-templates").hidden = !isTpl;
+  var ov = document.getElementById("tab-overview"), tp = document.getElementById("tab-templates");
+  ov.classList.toggle("active", !isTpl); ov.setAttribute("aria-selected", String(!isTpl));
+  tp.classList.toggle("active", isTpl);  tp.setAttribute("aria-selected", String(isTpl));
+  // 模板数据量大且变化慢，按需拉取即可，不必跟着 5s 轮询
+  if (isTpl) loadTemplates();
+}
+
+document.getElementById("tab-overview").addEventListener("click", function () { switchView("overview"); });
+document.getElementById("tab-templates").addEventListener("click", function () { switchView("templates"); });
+document.getElementById("tpl-filter").addEventListener("input", function (e) {
+  tplFilter = e.target.value;
+  renderTemplates();
+});
 
 document.getElementById("refresh").addEventListener("click", refreshAll);
 document.getElementById("interval").addEventListener("change", applyInterval);

@@ -163,6 +163,8 @@ func New(cfg *config.Config) (*App, error) {
 		mux := httpserver.New(httpserver.Config{
 			Addr:                 cfg.Addr,
 			StoreHTTPPath:        cfg.StoreHTTPPath,
+			TemplatesPath:        cfg.TemplatesHTTPPath,
+			TemplateSource:       persist.TemplateStore(),
 			DeviceStatsPath:      cfg.DeviceStatsPath,
 			QueueStatsPath:       cfg.QueueStatsPath,
 			TransportStatsPath:   cfg.TransportStatsPath,
