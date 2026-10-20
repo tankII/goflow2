@@ -12,8 +12,30 @@
     --rule:#c8d0d6; --rule-strong:#aab4bc;
     --accent:#0b6b52; --ok:#0b6b52; --warn:#8a5a00; --err:#b3261e;
     --packets:#17607a; --flows:#0b6b52;
+    /* 随主题变化的一组「派生色」：原本是硬编码字面量，深色下会失效 */
+    --edge:#12171b;   /* header / 抽屉的分隔粗线 */
+    --on-ink:#ffffff; /* 落在 --ink 底色上的文字 */
+    --on-chip:#ffffff;/* 落在彩色 chip 底上的文字 */
+    --led-off:#d7dee3;/* LED 未点亮的段 */
+    --scrim:rgba(18,23,27,.32);
+    --ring:rgba(11,107,82,.18);
     --mono: ui-monospace, "SFMono-Regular", "DejaVu Sans Mono", Menlo, Consolas, monospace;
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  /* 深色：底色与墨色对调，强调色整体提亮以保证在深底上的对比度 */
+  [data-theme="dark"]{
+    color-scheme: dark;
+    --bg:#11161a; --panel:#1a2026; --panel2:#232b32;
+    --ink:#e7edf1; --muted:#98a5b0;
+    --rule:#2c353d; --rule-strong:#44505a;
+    --accent:#3fb99a; --ok:#3fb99a; --warn:#e0a33c; --err:#ef6a60;
+    --packets:#4fb3d1; --flows:#3fb99a;
+    --edge:#3a454e;   /* 浅色下是近黑粗线，深色下若沿用 --ink 会刺眼，故单独压暗 */
+    --on-ink:#11161a;
+    --on-chip:#11161a;
+    --led-off:#2f3941;
+    --scrim:rgba(0,0,0,.55);
+    --ring:rgba(63,185,154,.22);
   }
   *{ box-sizing:border-box; }
   body{ margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:13px; line-height:1.45; }
@@ -24,11 +46,11 @@
   .spacer{ flex:1; }
 
   header{ position:sticky; top:0; z-index:6; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
-          padding:10px 16px; background:var(--panel); border-bottom:2px solid var(--ink); }
+          padding:10px 16px; background:var(--panel); border-bottom:2px solid var(--edge); }
   .brand{ display:flex; align-items:baseline; gap:10px; }
   .brand .sub{ font-size:11px; color:var(--muted); letter-spacing:.04em; }
   .signal{ width:9px; height:9px; border-radius:50%; background:var(--muted); display:inline-block; vertical-align:middle; margin-right:6px; }
-  .signal.ok{ background:var(--ok); box-shadow:0 0 0 3px rgba(11,107,82,.18); }
+  .signal.ok{ background:var(--ok); box-shadow:0 0 0 3px var(--ring); }
   .signal.err{ background:var(--err); } .signal.warn{ background:var(--warn); }
   #health{ font-size:12px; color:var(--muted); white-space:nowrap; }
   .readouts{ display:flex; gap:14px; }
@@ -66,33 +88,36 @@
   .empty{ padding:12px 14px; color:var(--muted); }
 
   .led{ display:inline-flex; gap:2px; align-items:center; }
-  .led-seg{ width:7px; height:12px; border-radius:1px; background:#d7dee3; }
+  .led-seg{ width:7px; height:12px; border-radius:1px; background:var(--led-off); }
   .led-seg.on{ background:var(--ok); } .led-seg.on.warn{ background:var(--warn); } .led-seg.on.err{ background:var(--err); }
 
   .chips{ display:flex; flex-wrap:wrap; gap:6px; padding:12px 14px; }
   .chip{ display:inline-flex; align-items:center; gap:6px; padding:2px 4px 2px 8px; border:1px solid var(--rule); border-radius:2px; background:var(--panel2); font-size:12px; }
   .chip-name{ font-family:var(--mono); }
-  .chip-kind{ font-size:10px; line-height:1.5; padding:0 5px; border-radius:2px; color:#fff; }
+  .chip-kind{ font-size:10px; line-height:1.5; padding:0 5px; border-radius:2px; color:var(--on-chip); }
   .kind-native{ background:var(--muted); } .kind-renamed{ background:var(--accent); }
   .kind-literal{ background:var(--warn); } .kind-virtual{ background:var(--flows); }
 
-  .overlay{ position:fixed; inset:0; background:rgba(18,23,27,.32); opacity:0; pointer-events:none; transition:opacity .15s ease; z-index:8; }
+  .overlay{ position:fixed; inset:0; background:var(--scrim); opacity:0; pointer-events:none; transition:opacity .15s ease; z-index:8; }
   .overlay.open{ opacity:1; pointer-events:auto; }
-  .drawer{ position:fixed; top:0; right:0; height:100%; width:min(720px,100%); background:var(--panel);
-           border-left:2px solid var(--ink); transform:translateX(100%); transition:transform .15s ease; z-index:9;
+  .drawer{ position:fixed; top:0; right:0; height:100%; width:min(960px,100%); background:var(--panel);
+           border-left:2px solid var(--edge); transform:translateX(100%); transition:transform .15s ease; z-index:9;
            display:flex; flex-direction:column; }
   .drawer.open{ transform:none; }
-  .drawer-head{ display:flex; align-items:flex-start; gap:12px; padding:12px 16px; border-bottom:1px solid var(--rule); }
+  .drawer-head{ flex:0 0 auto; display:flex; align-items:flex-start; gap:12px; padding:12px 16px; border-bottom:1px solid var(--rule); }
   .drawer-head h3{ font-size:15px; margin:0 0 3px; font-family:var(--mono); }
   .drawer-head .muted{ font-size:12px; }
-  .drawer-body{ padding:12px 16px 40px; overflow:auto; }
-  .drawer-tools{ display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  /* 抽屉纵向 flex：工具条与图表按内容占位，明细报表吃掉剩余高度并自行滚动。
+     窗口过矮时 .detail 收缩到 min-height 后由 .drawer-body 兜底滚动。 */
+  .drawer-body{ flex:1 1 auto; min-height:0; display:flex; flex-direction:column;
+                padding:12px 16px 16px; overflow:auto; }
+  .drawer-tools{ flex:0 0 auto; display:flex; align-items:center; gap:10px; margin-bottom:12px; }
   .seg{ display:inline-flex; border:1px solid var(--rule-strong); border-radius:2px; overflow:hidden; }
   .seg-btn{ border:none; border-right:1px solid var(--rule-strong); border-radius:0; background:var(--panel); padding:4px 12px; }
   .seg-btn:last-child{ border-right:none; }
-  .seg-btn.active{ background:var(--ink); color:#fff; border-color:var(--ink); }
+  .seg-btn.active{ background:var(--ink); color:var(--on-ink); border-color:var(--ink); }
 
-  .chart-box{ border:1px solid var(--rule); border-radius:2px; padding:10px 12px; background:var(--panel); }
+  .chart-box{ flex:0 0 auto; border:1px solid var(--rule); border-radius:2px; padding:10px 12px; background:var(--panel); }
   .chart-head{ display:flex; gap:18px; margin-bottom:8px; }
   .legend{ display:inline-flex; align-items:center; gap:6px; font-size:12px; }
   .legend .sw{ width:10px; height:10px; border-radius:2px; display:inline-block; }
@@ -102,11 +127,20 @@
   .chart-row .rlabel{ font-size:11px; color:var(--muted); font-family:var(--mono); text-align:right; }
   .chart-row svg{ display:block; width:100%; height:78px; }
   .hit{ cursor:crosshair; }
-  .detail{ margin-top:12px; border:1px solid var(--rule); border-radius:2px; max-height:260px; overflow:auto; }
+  /* 撑满抽屉剩余高度，不再写死 260px；thead 吸顶，内部独立滚动 */
+  .detail{ flex:1 1 auto; min-height:140px; margin-top:12px; border:1px solid var(--rule); border-radius:2px; overflow:auto; }
   .detail thead th{ position:sticky; top:0; background:var(--panel); }
+
 
   @media (prefers-reduced-motion: reduce){ *{ transition:none !important; } }
 </style>
+<script>
+  // 在首帧渲染前套用已保存的主题，避免深色用户看到一帧浅色闪烁。
+  try {
+    var t = localStorage.getItem("goflow2.theme");
+    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) { /* 隐私模式下 localStorage 不可用，退回默认浅色 */ }
+</script>
 </head>
 <body>
 <header>
@@ -117,6 +151,7 @@
     <span class="readout">传输<b id="transport">—</b></span>
     <span class="readout">格式<b id="format">—</b></span>
   </div>
+  <button id="theme-toggle" title="切换到深色">深色</button>
   <button id="fields-toggle">字段 (0)</button>
   <div class="links" id="links"></div>
   <div class="toolbar">
@@ -149,6 +184,8 @@
     <div class="panel-head"><span>设备统计</span><span class="panel-note muted">点击行查看按小时 / 按日</span></div>
     <div id="devices"></div>
   </section>
+  </div>
+
 </main>
 
 <div id="overlay" class="overlay"></div>
@@ -513,6 +550,23 @@ function buildLinks() {
   });
 }
 
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  try { localStorage.setItem("goflow2.theme", theme); } catch (e) { /* 隐私模式，忽略 */ }
+  var b = document.getElementById("theme-toggle");
+  if (b) {
+    // 按钮显示的是「点下去会切到哪个主题」
+    b.textContent = theme === "dark" ? "浅色" : "深色";
+    b.title = theme === "dark" ? "切换到浅色" : "切换到深色";
+  }
+}
+
+document.getElementById("theme-toggle").addEventListener("click", function () {
+  var cur = document.documentElement.getAttribute("data-theme");
+  applyTheme(cur === "dark" ? "light" : "dark");
+});
+
+
 document.getElementById("refresh").addEventListener("click", refreshAll);
 document.getElementById("interval").addEventListener("change", applyInterval);
 document.getElementById("fields-toggle").addEventListener("click", function () {
@@ -525,6 +579,8 @@ document.getElementById("overlay").addEventListener("click", closeDrawer);
 document.addEventListener("keydown", function (e) { if (e.key === "Escape" && selected) closeDrawer(); });
 document.addEventListener("visibilitychange", function () { applyInterval(); if (!document.hidden) refreshAll(); });
 
+// 与 <head> 中的防闪烁脚本对齐：属性已就位，这里只补按钮文案
+applyTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light");
 buildLinks();
 renderOverview();
 renderFlowFields();
