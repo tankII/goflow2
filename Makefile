@@ -178,7 +178,8 @@ deploy-package:
 	 mkdir -p $(RELEASE_DIR)/"$$PKG_DIR"; \
 	 cp -r $(RELEASE_DIR)/bin $(RELEASE_DIR)/"$$PKG_DIR"/; \
 	 cp -r $(RELEASE_DIR)/conf $(RELEASE_DIR)/"$$PKG_DIR"/; \
-	 cp .deploy/run.sh .deploy/setenv.sh .deploy/collect-metrics.sh $(RELEASE_DIR)/"$$PKG_DIR"/ 2>/dev/null || true; \
+	 cp .deploy/run.sh .deploy/setenv.sh .deploy/collect-metrics.sh .deploy/watchdog.sh $(RELEASE_DIR)/"$$PKG_DIR"/ 2>/dev/null || true; \
+	 chmod +x $(RELEASE_DIR)/"$$PKG_DIR"/run.sh $(RELEASE_DIR)/"$$PKG_DIR"/watchdog.sh $(RELEASE_DIR)/"$$PKG_DIR"/collect-metrics.sh 2>/dev/null || true; \
 	 cp .deploy/README.md $(RELEASE_DIR)/"$$PKG_DIR"/README.md 2>/dev/null || true; \
 	 (cd $(RELEASE_DIR) && tar czf "$$PKG_DIR.tar.gz" "$$PKG_DIR"); \
 	 echo ">>> done  $(RELEASE_DIR)/$$PKG_DIR.tar.gz"

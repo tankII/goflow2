@@ -14,6 +14,7 @@ goflow2-deploy-<version>-<date>/
 ├── logs/                         # 运行时 pid
 ├── run.sh                        # 启停脚本（start/stop/restart/status）
 ├── setenv.sh                     # 环境变量预配置（可选）
+├── watchdog.sh                   # 看门狗（供 crontab 调用，进程不在则拉起）
 └── README.md                     # 本文档
 ```
 
@@ -202,3 +203,46 @@ GOFLOW2_TRANSPORT=kafka bash run.sh start -- \
 make package-deploy ARCH=all   # linux-amd64 + linux-arm64
 # 产物在 dist/goflow2-deploy-<version>-<date>.tar.gz
 ```
+
+## 看门狗：进程退出后自动拉起
+
+`watchdog.sh` 供 crontab 定期调用：采集器存活就静默退出，不存活就自动拉起。
+
+### 用法
+
+```bash
+bash watchdog.sh            # 检查并在必要时拉起
+bash watchdog.sh --status   # 只查看状态，不拉起（退出码 0=存活 1=未存活）
+```
+
+### 配置 crontab
+
+```bash
+crontab -e
+```
+
+加入（每 2 分钟检查一次）：
+
+```cron
+*/2 * * * * /home/ipms/goflow2/watchdog.sh
+```
+
+正常情况下脚本**不产生任何输出**，cron 不会发邮件；只有拉起动作和失败才会记录到 `logs/watchdog/check-<日期>.log`。
+
+### 判定方式
+
+存活判定直接委托 `run.sh status` 的退出码（0=存活，1=未运行），判定逻辑只有一处定义（`run.sh`），看门狗不再自己解析 pid 文件。
+
+拉起时若检测到 pid 文件是陈旧的会先清理 —— 否则 `run.sh start` 会误判「已在运行」而拒绝启动。
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `GOFLOW2_DEPLOY_DIR` | 脚本所在目录 | 部署目录（`run.sh` 所在位置） |
+| `GOFLOW2_WATCHDOG_LOG` | `${DEPLOY_DIR}/logs/watchdog` | 看门狗日志目录 |
+
+### 注意
+
+- 看门狗只判断**进程是否存在**，不判断采集器是否真的在收流量。进程在但采集卡死的情况需要另行监控。
+- 若 `run.sh status` 因 pid 文件陈旧而误报「在运行」（该 PID 恰被系统分配给别的程序），看门狗会认为存活而不拉起。概率极低，但若遇到，可用 `watchdog.sh --status` 核对。
