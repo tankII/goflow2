@@ -26,10 +26,14 @@ func TestCollectorQueueStats(t *testing.T) {
 	require.Equal(t, 4, stats[0].Capacity)
 	require.Equal(t, 0, stats[0].Depth)
 	require.Equal(t, 0.0, stats[0].Utilization)
+	// 应用层接收丢包计数：初始为 0
+	require.Equal(t, uint64(0), stats[0].DroppedPackets)
+	require.Equal(t, uint64(0), stats[0].DroppedBytes)
 
 	b, err := json.Marshal(stats)
 	require.NoError(t, err)
-	require.JSONEq(t, `[{"scheme":"netflow","hostname":"127.0.0.1","port":2055,"depth":0,"capacity":4,"utilization":0}]`, string(b))
+	require.JSONEq(t, `[{"scheme":"netflow","hostname":"127.0.0.1","port":2055,"depth":0,"capacity":4,
+		"utilization":0,"dropped_packets":0,"dropped_bytes":0}]`, string(b))
 }
 
 func TestCollectorQueueStatsEmpty(t *testing.T) {

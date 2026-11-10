@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	reuseport "github.com/libp2p/go-reuseport"
@@ -66,6 +67,12 @@ type UDPReceiver struct {
 
 	workers int
 	sockets int
+
+	// 应用层接收丢包计数：dispatch 队列满时丢弃的报文数与字节数。
+	// 与内核层丢包（socket 接收缓冲区溢出，goflow2 根本收不到）无关，
+	// 两者需分别用 netstat -su / nstat 观察。
+	droppedPackets atomic.Uint64
+	droppedBytes   atomic.Uint64
 
 	cb ReceiverCallback
 }
@@ -154,6 +161,12 @@ func (r *UDPReceiver) QueueStats() (depth int, capacity int) {
 	return len(r.dispatch), cap(r.dispatch)
 }
 
+// DropStats 返回该监听器累计的应用层接收丢包数与丢包字节数。
+// 仅统计 dispatch 队列满而丢弃的报文，不含内核层丢包。
+func (r *UDPReceiver) DropStats() (packets uint64, bytes uint64) {
+	return r.droppedPackets.Load(), r.droppedBytes.Load()
+}
+
 func (r *UDPReceiver) receive(addr string, port int, started chan bool) error {
 	if strings.ContainsRune(addr, ':') && !strings.ContainsRune(addr, '[') {
 		addr = "[" + addr + "]"
@@ -226,6 +239,12 @@ func (r *UDPReceiver) receiveRoutine(udpconn *net.UDPConn) (err error) {
 			case <-r.stopCh:
 				return nil
 			default:
+				// 队列已满：丢弃本包。这是「应用层接收丢包」——
+				// 与内核层丢包（socket 缓冲区溢出）不同，后者收不到、
+				// 无法在此计数。计数器在 receiver 内部维护，
+				// 因此即便关闭 Prometheus 指标也能观测。
+				r.droppedPackets.Add(1)
+				r.droppedBytes.Add(uint64(pkt.size))
 				if r.cb != nil {
 					r.cb.Dropped(Message{
 						Src:      normalizeAddrPort(pkt.src.AddrPort()),
@@ -235,7 +254,6 @@ func (r *UDPReceiver) receiveRoutine(udpconn *net.UDPConn) (err error) {
 					})
 				}
 				packetPool.Put(pkt)
-				// increase counter
 			}
 		}
 

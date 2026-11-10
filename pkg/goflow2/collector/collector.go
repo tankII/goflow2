@@ -68,6 +68,13 @@ type QueueStat struct {
 	Depth       int     `json:"depth"`
 	Capacity    int     `json:"capacity"`
 	Utilization float64 `json:"utilization"`
+
+	// DroppedPackets / DroppedBytes 是「应用层接收丢包」：
+	// dispatch 队列已满而丢弃的报文数与字节数。
+	// 不含内核层丢包（socket 接收缓冲区溢出，goflow2 收不到该报文，
+	// 无法在此计数），内核层需用 netstat -su / nstat 单独观察。
+	DroppedPackets uint64 `json:"dropped_packets"`
+	DroppedBytes   uint64 `json:"dropped_bytes"`
 }
 
 // QueueStats returns the dispatch queue usage for each listener.
@@ -79,13 +86,16 @@ func (c *Collector) QueueStats() []QueueStat {
 		if capacity > 0 {
 			utilization = float64(depth) / float64(capacity)
 		}
+		droppedPackets, droppedBytes := rep.recv.DropStats()
 		stats = append(stats, QueueStat{
-			Scheme:      rep.scheme,
-			Hostname:    rep.hostname,
-			Port:        rep.port,
-			Depth:       depth,
-			Capacity:    capacity,
-			Utilization: utilization,
+			Scheme:         rep.scheme,
+			Hostname:       rep.hostname,
+			Port:           rep.port,
+			Depth:          depth,
+			Capacity:       capacity,
+			Utilization:    utilization,
+			DroppedPackets: droppedPackets,
+			DroppedBytes:   droppedBytes,
 		})
 	}
 	return stats

@@ -14,7 +14,8 @@ func TestQueueStatsEndpoint(t *testing.T) {
 		QueueStatsPath: "/queue-stats",
 		QueueStatsSource: func() []collector.QueueStat {
 			return []collector.QueueStat{
-				{Scheme: "netflow", Hostname: "", Port: 2055, Depth: 2, Capacity: 4, Utilization: 0.5},
+				{Scheme: "netflow", Hostname: "", Port: 2055, Depth: 2, Capacity: 4, Utilization: 0.5,
+					DroppedPackets: 17, DroppedBytes: 20400},
 			}
 		},
 	}, nil, func() bool { return true })
@@ -25,7 +26,9 @@ func TestQueueStatsEndpoint(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
-	require.JSONEq(t, `[{"scheme":"netflow","hostname":"","port":2055,"depth":2,"capacity":4,"utilization":0.5}]`, rec.Body.String())
+	// 应用层丢包计数随队列统计一并返回
+	require.JSONEq(t, `[{"scheme":"netflow","hostname":"","port":2055,"depth":2,"capacity":4,"utilization":0.5,
+		"dropped_packets":17,"dropped_bytes":20400}]`, rec.Body.String())
 }
 
 func TestQueueStatsEndpointDefaultPath(t *testing.T) {

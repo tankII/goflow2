@@ -175,3 +175,53 @@ func getFreeUDPPort() (int, error) {
 	}
 	return port, nil
 }
+
+// TestUDPReceiverDropStats 校验应用层丢包计数。
+//
+// 关键在于不启动解码协程（Start 传 nil decodeFunc）：队列不会被消费，
+// 容量为 1 时第二个包起就会走丢弃分支，从而真实覆盖计数点。
+func TestUDPReceiverDropStats(t *testing.T) {
+	addr := "::1"
+	port, err := getFreeUDPPort()
+	require.NoError(t, err)
+
+	r, err := NewUDPReceiver(&UDPReceiverConfig{QueueSize: 1, Workers: 1, Sockets: 1})
+	require.NoError(t, err)
+
+	packets, bytes := r.DropStats()
+	require.Equal(t, uint64(0), packets)
+	require.Equal(t, uint64(0), bytes)
+
+	// decodeFunc 为 nil：队列无人消费
+	require.NoError(t, r.Start(addr, port, nil))
+
+	conn, err := net.Dial("udp", net.JoinHostPort(addr, strconv.Itoa(port)))
+	require.NoError(t, err)
+	payload := make([]byte, 100)
+	for i := 0; i < 20; i++ {
+		_, err = conn.Write(payload)
+		require.NoError(t, err)
+	}
+	require.NoError(t, conn.Close())
+
+	// 等待接收协程处理完
+	require.Eventually(t, func() bool {
+		p, _ := r.DropStats()
+		return p > 0
+	}, 3*time.Second, 10*time.Millisecond, "应统计到应用层丢包")
+
+	p, b := r.DropStats()
+	require.Greater(t, p, uint64(0))
+	// 字节数按实际收到的报文长度累加：每包至少 1 字节，故总字节数不小于包数
+	require.GreaterOrEqual(t, b, p)
+	require.NoError(t, r.Stop())
+}
+
+// TestUDPReceiverDropStatsZeroForSynchronous 阻塞模式下不丢包，计数恒为 0。
+func TestUDPReceiverDropStatsZeroForSynchronous(t *testing.T) {
+	r, err := NewUDPReceiver(&UDPReceiverConfig{QueueSize: 0, Blocking: true})
+	require.NoError(t, err)
+	packets, bytes := r.DropStats()
+	require.Equal(t, uint64(0), packets)
+	require.Equal(t, uint64(0), bytes)
+}
