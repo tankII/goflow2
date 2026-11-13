@@ -69,9 +69,34 @@
 # 取值过小会反复丢失模板并触发 fallback 解码，请勿低于刷新周期。
 # [[ -z "${GOFLOW2_TEMPLATES_TTL:-}" ]] && export GOFLOW2_TEMPLATES_TTL=1h
 # [[ -z "${GOFLOW2_SAMPLING_TTL:-}" ]] && export GOFLOW2_SAMPLING_TTL=1h
-# 访问模板时是否续期（默认关闭）。长连接且模板持续刷新的场景可开启。
+# 访问模板时是否续期（默认关闭）。
+#
+# 现网实测：不开启时 template_not_found 累计达数百万次（117.184.216.1 约
+# 377 万、117.184.216.2 约 271 万），即这些数据流集因找不到模板而无法
+# 解码、直接丢弃——与内核丢包是两回事。
+#
+# 原因：TTL 到期即清理，与设备重发模板的周期赛跑。观测域多的设备
+# （如 117.184.216.1 有 18 个观测域）最容易命中。
+#
+# 开启后，模板在被使用时会续期——正在收流量的模板永不过期，只有真正
+# 空闲的观测域才会被回收，从根上消除该类丢数据。
 # [[ -z "${GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS=1
 # [[ -z "${GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS=1
+
+# ── UDP socket 接收缓冲区（SO_RCVBUF）────────────────────────
+# 背景：内核 socket 接收缓冲区是应用层队列之前的「一级缓冲」——包先落在
+# 内核缓冲区，再被读进 dispatch 队列。默认仅 256KB（约 170 个 1500B 包），
+# 突发流量会在内核层就溢出（RcvbufErrors），根本到不了能吸收 5 万个包的
+# 应用层队列。表现为「应用层队列无积压、内核却在丢包」。
+#
+# 调大该值可显著降低内核层丢包。注意内核会把请求值截断到
+# net.core.rmem_max，因此需要同步调大 sysctl 才能完全生效：
+#   sysctl -w net.core.rmem_max=16777216
+# 改完需重启 goflow2 才生效（socket 缓冲在创建时确定）。
+#
+# 内存代价：每个 socket 占用该值（4 个 socket × 4MB = 16MB 内核内存）。
+# 设为 0 表示不设置，沿用系统默认值。
+# [[ -z "${GOFLOW2_UDP_RECV_BUFFER:-}" ]] && export GOFLOW2_UDP_RECV_BUFFER=4194304
 
 # ── Go 运行时调优（可选）────────────────────────────────────
 # 背景：现网实测分配速率约 377 MiB/s、GC 673 次/分钟，且"堆只涨不降"

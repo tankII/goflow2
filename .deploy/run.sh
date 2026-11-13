@@ -18,6 +18,7 @@
 #   GOFLOW2_SAMPLING_TTL           采样率 TTL，默认 0＝永不过期；长期运行建议 1h
 #   GOFLOW2_MAPPING         mapping.yaml 路径
 #   GOFLOW2_LOGLEVEL        日志级别，默认 info
+#   GOFLOW2_UDP_RECV_BUFFER   UDP socket 接收缓冲区字节数（SO_RCVBUF，默认 4MB；受 net.core.rmem_max 限制）
 #   GOFLOW2_PID_FILE        pid 文件路径
 #   GOFLOW2_TRANSPORT=file 时生效（见 setenv.sh 示例）
 #     GOFLOW2_FILE_PATH      flow 输出文件（默认空 → stdout）
@@ -286,6 +287,18 @@ _build_store_args() {
 
 # ── 日志参数构建（可选，默认仅 stderr 重定向）───────────────────
 # 布尔型环境变量：1/true → 无值 flag；0/false → key=false；其他值 → key=值
+# UDP socket 接收缓冲区（SO_RCVBUF）字节数。
+# 内核 socket 缓冲区是应用层队列之前的一级缓冲，默认仅 256KB，
+# 突发流量会在内核层就溢出（RcvbufErrors），到不了应用层队列。
+# 注意：内核会把该值截断到 net.core.rmem_max，需同步调大 sysctl 才完全生效。
+_build_udp_args() {
+    local args=""
+    if [[ -n "${GOFLOW2_UDP_RECV_BUFFER:-}" ]]; then
+        args="-udp.recv.buffer ${GOFLOW2_UDP_RECV_BUFFER}"
+    fi
+    echo "$args"
+}
+
 _build_log_args() {
     local args=""
     _lg_bool() {
@@ -390,6 +403,11 @@ do_start() {
     fi
     local SWITCH_ARGS
     SWITCH_ARGS="$(_build_switch_args)"
+    local UDP_ARGS
+    UDP_ARGS="$(_build_udp_args)"
+    if [[ -n "$UDP_ARGS" ]]; then
+        echo "    udp args   :${UDP_ARGS}"
+    fi
     local LOG_ARGS
     LOG_ARGS="$(_build_log_args)"
     if [[ -n "$LOG_ARGS" ]]; then
@@ -437,6 +455,7 @@ do_start() {
         ${STORE_ARGS:-} \
         ${SWITCH_ARGS:-} \
         ${LOG_ARGS:-} \
+        ${UDP_ARGS:-} \
         ${USER_ARGS:-} \
         < /dev/null &
     local PID=$!

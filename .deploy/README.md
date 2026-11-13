@@ -15,6 +15,7 @@ goflow2-deploy-<version>-<date>/
 ├── run.sh                        # 启停脚本（start/stop/restart/status）
 ├── setenv.sh                     # 环境变量预配置（可选）
 ├── watchdog.sh                   # 看门狗（供 crontab 调用，进程不在则拉起）
+├── diag.sh                       # 诊断脚本（定位丢包发生在哪一层，只读）
 └── README.md                     # 本文档
 ```
 
@@ -246,3 +247,48 @@ crontab -e
 
 - 看门狗只判断**进程是否存在**，不判断采集器是否真的在收流量。进程在但采集卡死的情况需要另行监控。
 - 若 `run.sh status` 因 pid 文件陈旧而误报「在运行」（该 PID 恰被系统分配给别的程序），看门狗会认为存活而不拉起。概率极低，但若遇到，可用 `watchdog.sh --status` 核对。
+
+## 诊断：数据丢在哪一层
+
+`diag.sh` 是只读诊断脚本，用于区分 NetFlow 数据丢失发生在哪一层 —— 四种位置的
+现象相似，但修复方向完全不同：
+
+| 层 | 指标 | 典型原因 | 修复方向 |
+|---|---|---|---|
+| 内核 socket 缓冲 | `RcvbufErrors` 增长 | 缓冲过小（默认仅 256KB ≈ 170 个包），突发流量在内核就溢出 | 调大 `SO_RCVBUF` + `net.core.rmem_max` |
+| 内核软中断 | `time_squeeze` 增长 | CPU/软中断处理不过来 | 降 CPU 占用、加网卡队列 |
+| 网卡 | `rx_dropped` 增长 | ring buffer / RSS 队列满 | 调大 ring、RSS 队列 |
+| 应用层 | `template_not_found` 增长 | 模板缺失，数据流集无法解码被丢弃 | 开 `templates.ttl.extend-on-access` |
+
+```bash
+bash diag.sh          # 默认采样 60 秒
+bash diag.sh 120      # 自定义采样间隔
+```
+
+结果同时输出到 stdout 并保存到 `/tmp/goflow2-diag-<时间戳>.txt`。
+
+### 关键提示
+
+**「应用层队列无积压」不等于「没丢包」。** 内核 socket 缓冲区是应用层队列之前的
+一级缓冲，默认只有 256KB（约 170 个 1500B 包），而应用层队列有 50000 槽位。
+两级缓冲相差 2000 倍，突发流量先撑爆内核小缓冲，包根本到不了应用层 —— 此时
+队列 depth 长期接近 0，但内核 `RcvbufErrors` 在涨。
+
+### 配套配置
+
+```bash
+# 放大内核接收缓冲（每 socket，4 个 socket × 4MB = 16MB 内核内存）
+export GOFLOW2_UDP_RECV_BUFFER=4194304
+
+# 模板访问续期：正在收流量的模板永不过期，消除 template_not_found 导致的丢数据
+export GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS=1
+```
+
+`GOFLOW2_UDP_RECV_BUFFER` 受 `net.core.rmem_max` 限制，内核会**静默截断**到上限，
+因此需要同步调大 sysctl（需 root）：
+
+```bash
+sysctl -w net.core.rmem_max=16777216
+```
+
+改完必须**重启 goflow2**（socket 缓冲在创建时确定）。
