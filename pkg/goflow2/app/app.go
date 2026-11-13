@@ -226,6 +226,10 @@ func New(cfg *config.Config) (*App, error) {
 		Fields() []protoproducer.FlowField
 	}); ok {
 		flowFields = fp.Fields()
+		// 补上输出字段的中文释义：释义表在 httpserver 包，这里按需填充
+		for i := range flowFields {
+			flowFields[i].Desc = httpserver.FlowFieldDescription(flowFields[i].Name)
+		}
 	}
 
 	// deviceRC is nil when metrics are disabled, which turns the Prometheus

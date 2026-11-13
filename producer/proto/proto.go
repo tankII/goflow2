@@ -25,6 +25,8 @@ type FlowField struct {
 	Kind string `json:"kind"`
 	// Source is the original mapping key when Name was renamed.
 	Source string `json:"source,omitempty"`
+	// Desc explains what the field carries, for display purposes.
+	Desc string `json:"desc,omitempty"`
 }
 
 // FlowField kinds.
