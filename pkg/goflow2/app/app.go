@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +36,99 @@ type App struct {
 	server        *http.Server
 	serverErr     chan error
 	collecting    atomic.Bool
+}
+
+// buildDashboardParams 汇总控制台「运行参数」卡片要展示的配置。
+//
+// 只挑与收发路径直接相关的项：接收侧看监听参数与 socket 缓冲，发送侧看
+// 传输与输出格式，运行时看影响性能的关键开关。无关配置不堆到界面上。
+func buildDashboardParams(cfg *config.Config, listeners []listen.ListenerConfig) []httpserver.ParamGroup {
+	groups := []httpserver.ParamGroup{}
+
+	// ── 接收 ──
+	recv := []httpserver.ParamItem{}
+	for _, l := range listeners {
+		host := l.Hostname
+		if host == "" {
+			host = "*"
+		}
+		recv = append(recv,
+			httpserver.ParamItem{
+				Label: "监听 " + l.Scheme,
+				Value: fmt.Sprintf("%s:%d", host, l.Port),
+			},
+			httpserver.ParamItem{
+				Label: "  socket / worker",
+				Value: fmt.Sprintf("%d / %d", l.NumSockets, l.NumWorkers),
+			},
+			httpserver.ParamItem{
+				Label: "  队列容量",
+				Value: fmt.Sprintf("%d（阻塞=%s）", l.QueueSize, onOff(l.Blocking)),
+			},
+		)
+	}
+	if cfg.UDPRecvBuffer > 0 {
+		recv = append(recv, httpserver.ParamItem{
+			Label: "socket 接收缓冲",
+			Value: humanBytes(uint64(cfg.UDPRecvBuffer)),
+		})
+	}
+	if len(recv) > 0 {
+		groups = append(groups, httpserver.ParamGroup{Group: "接收", Items: recv})
+	}
+
+	// ── 发送 ──
+	send := []httpserver.ParamItem{
+		{Label: "传输方式", Value: cfg.Transport},
+		{Label: "输出格式", Value: cfg.Format},
+		{Label: "产出方式", Value: cfg.Produce},
+	}
+	if cfg.MappingFile != "" {
+		send = append(send, httpserver.ParamItem{Label: "字段映射", Value: cfg.MappingFile})
+	}
+	groups = append(groups, httpserver.ParamGroup{Group: "发送", Items: send})
+
+	// ── 运行时 ──
+	run := []httpserver.ParamItem{
+		{Label: "HTTP 面板", Value: cfg.Addr},
+		{Label: "指标 / pprof", Value: onOff(cfg.Metrics) + " / " + onOff(cfg.Pprof)},
+		{Label: "模板 TTL", Value: cfg.TemplatesTTL.String() + "（访问续期=" + onOff(cfg.TemplatesExtendOnAccess) + "）"},
+		{Label: "采样率 TTL", Value: cfg.SamplingRatesTTL.String() + "（访问续期=" + onOff(cfg.SamplingRatesExtendOnAccess) + "）"},
+	}
+	// GOGC / GOMEMLIMIT 是影响 CPU 与内存的关键开关，从环境变量读取
+	if v := os.Getenv("GOGC"); v != "" {
+		run = append(run, httpserver.ParamItem{Label: "GOGC", Value: v})
+	}
+	if v := os.Getenv("GOMEMLIMIT"); v != "" {
+		run = append(run, httpserver.ParamItem{Label: "GOMEMLIMIT", Value: v})
+	}
+	groups = append(groups, httpserver.ParamGroup{Group: "运行时", Items: run})
+
+	return groups
+}
+
+// onOff 把布尔值渲染为「开 / 关」。
+func onOff(b bool) string {
+	if b {
+		return "开"
+	}
+	return "关"
+}
+
+// humanBytes 把字节数渲染为便于阅读的字符串。
+func humanBytes(n uint64) string {
+	switch {
+	case n >= 1024*1024*1024:
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1024*1024*1024))
+	case n == 0:
+		return "0 B"
+	case n >= 1024*1024:
+		return fmt.Sprintf("%.0f MiB", float64(n)/(1024*1024))
+	case n >= 1024:
+		return fmt.Sprintf("%.0f KiB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
 
 // New constructs a new App from config.
@@ -174,6 +268,7 @@ func New(cfg *config.Config) (*App, error) {
 			Transport:            cfg.Transport,
 			Format:               cfg.Format,
 			FlowFields:           flowFields,
+			Params:               buildDashboardParams(cfg, listeners),
 			RouterCounter:        deviceRC,
 			QueueStatsSource:     coll.QueueStats,
 			TransportStatsSource: transporter.StatsSource(),

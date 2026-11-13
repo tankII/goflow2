@@ -68,7 +68,13 @@
   :focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
 
   main{ padding:14px 16px 40px; display:grid; gap:14px; max-width:1400px; margin:0 auto; }
-  .panels{ display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(360px,1fr)); }
+  /* 收发页：两个队列面板并排，均分宽度；minmax(0,1fr) 避免表头被裁切 */
+  .panels{ display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(420px,1fr)); align-items:start; }
+  .panels > .panel{ min-width:0; }
+  /* 配置页：参数卡窄、输出字段卡宽 */
+  .config-grid{ display:grid; gap:14px; grid-template-columns:280px minmax(0,1fr); align-items:start; }
+  .config-grid > .panel{ min-width:0; }
+  @media (max-width:1000px){ .config-grid{ grid-template-columns:1fr; } }
 
   .panel{ background:var(--panel); border:1px solid var(--rule); border-radius:2px; overflow:hidden; }
   .panel-head{ display:flex; align-items:center; gap:8px; padding:9px 14px; border-bottom:1px solid var(--rule); }
@@ -92,6 +98,16 @@
   .led{ display:inline-flex; gap:2px; align-items:center; }
   .led-seg{ width:7px; height:12px; border-radius:1px; background:var(--led-off); }
   .led-seg.on{ background:var(--ok); } .led-seg.on.warn{ background:var(--warn); } .led-seg.on.err{ background:var(--err); }
+
+  /* 运行参数卡片 */
+  .params{ padding:4px 0 8px; }
+  .params-group{ padding:8px 14px 4px; }
+  .params-group + .params-group{ border-top:1px solid var(--rule); }
+  .params-title{ font-size:11px; color:var(--muted); letter-spacing:.04em; margin-bottom:6px; }
+  .params-row{ display:flex; gap:10px; align-items:baseline; padding:2px 0; }
+  .params-row .p-label{ color:var(--muted); font-size:12px; white-space:nowrap; }
+  .params-row .p-value{ font-family:var(--mono); font-size:12px; color:var(--ink);
+                        margin-left:auto; text-align:right; word-break:break-all; }
 
   .chips{ display:flex; flex-wrap:wrap; gap:6px; padding:12px 14px; }
   .chip{ display:inline-flex; align-items:center; gap:6px; padding:2px 4px 2px 8px; border:1px solid var(--rule); border-radius:2px; background:var(--panel2); font-size:12px; }
@@ -191,6 +207,7 @@
   <div class="viewtabs" role="tablist">
     <button class="viewtab active" id="tab-io" role="tab" aria-selected="true">收发</button>
     <button class="viewtab" id="tab-devices" role="tab" aria-selected="false">设备</button>
+    <button class="viewtab" id="tab-config" role="tab" aria-selected="false">配置</button>
     <button class="viewtab" id="tab-templates" role="tab" aria-selected="false">模板</button>
   </div>
   <button id="theme-toggle" title="切换到深色">深色</button>
@@ -209,10 +226,6 @@
 </header>
 <main>
   <div id="view-io">
-  <section class="panel" id="flowfields" hidden>
-    <div class="panel-head"><span>输出字段</span><span class="panel-note muted">flow 记录输出列</span></div>
-    <div id="fields"></div>
-  </section>
   <div class="panels">
     <section class="panel">
       <div class="panel-head"><span>接收队列</span><span class="panel-note muted">listener dispatch · 丢包为应用层（队列满），内核层丢包需另看 netstat -su</span></div>
@@ -230,6 +243,19 @@
     <div class="panel-head"><span>设备统计</span><span class="panel-note muted">点击行查看按小时 / 按日</span></div>
     <div id="devices"></div>
   </section>
+  </div>
+
+  <div id="view-config" hidden>
+    <div class="config-grid">
+      <section class="panel">
+        <div class="panel-head"><span>运行参数</span><span class="panel-note muted">effective settings</span></div>
+        <div id="params"></div>
+      </section>
+      <section class="panel" id="flowfields">
+        <div class="panel-head"><span>输出字段</span><span class="panel-note muted">flow 记录输出列</span></div>
+        <div id="fields"></div>
+      </section>
+    </div>
   </div>
 
   <div id="view-templates" hidden>
@@ -571,6 +597,34 @@ function renderOverview() {
   btn.disabled = n === 0;
 }
 
+// renderParams 渲染「运行参数」卡片：按分组展示当前生效的配置。
+// 参数由后端在启动时注入（dashboardConfig.params），反映的是实际生效值
+// 而非 setenv.sh 里的原始文本。
+function renderParams() {
+  var host = document.getElementById("params");
+  host.textContent = "";
+  var groups = CFG.params || [];
+  if (groups.length === 0) {
+    host.appendChild(el("div", "empty", "未提供运行参数。"));
+    return;
+  }
+  var wrap = el("div", "params");
+  groups.forEach(function (g) {
+    var items = g.items || [];
+    if (items.length === 0) return;
+    var group = el("div", "params-group");
+    group.appendChild(el("div", "params-title", esc(g.group || "")));
+    items.forEach(function (it) {
+      var row = el("div", "params-row");
+      row.appendChild(el("span", "p-label", esc(it.label || "")));
+      row.appendChild(el("span", "p-value", esc(it.value || "")));
+      group.appendChild(row);
+    });
+    wrap.appendChild(group);
+  });
+  host.appendChild(wrap);
+}
+
 function renderFlowFields() {
   var host = document.getElementById("fields");
   host.textContent = "";
@@ -780,8 +834,9 @@ function loadTemplates() {
 }
 
 function switchView(name) {
-  // 三个互斥视图：收发 / 设备 / 模板。模板数据量大且变化慢，切到时按需拉取。
-  var views = ["io", "devices", "templates"];
+  // 四个互斥视图：收发 / 设备 / 配置 / 模板。
+  // 模板数据量大且变化慢，切到时按需拉取。
+  var views = ["io", "devices", "config", "templates"];
   views.forEach(function (v) {
     document.getElementById("view-" + v).hidden = v !== name;
     var tab = document.getElementById("tab-" + v);
@@ -793,6 +848,7 @@ function switchView(name) {
 
 document.getElementById("tab-io").addEventListener("click", function () { switchView("io"); });
 document.getElementById("tab-devices").addEventListener("click", function () { switchView("devices"); });
+document.getElementById("tab-config").addEventListener("click", function () { switchView("config"); });
 document.getElementById("tab-templates").addEventListener("click", function () { switchView("templates"); });
 document.getElementById("tpl-filter").addEventListener("input", function (e) {
   tplFilter = e.target.value;
@@ -802,15 +858,8 @@ document.getElementById("tpl-filter").addEventListener("input", function (e) {
 document.getElementById("refresh").addEventListener("click", refreshAll);
 document.getElementById("interval").addEventListener("change", applyInterval);
 document.getElementById("fields-toggle").addEventListener("click", function () {
-  var s = document.getElementById("flowfields");
-  if (s.hidden) {
-    // 「输出字段」面板在收发视图里：若当前停在别的页签，先切回去再展开，
-    // 否则点了也没有可见变化。
-    if (document.getElementById("view-io").hidden) switchView("io");
-    s.hidden = false;
-  } else {
-    s.hidden = true;
-  }
+  // 「输出字段」卡片已移入配置页，此按钮作为快捷入口：切到配置页查看。
+  switchView("config");
 });
 document.getElementById("drawer-close").addEventListener("click", closeDrawer);
 document.getElementById("drawer-refresh").addEventListener("click", function () { if (selected) loadDrawer(selected); });
@@ -823,6 +872,7 @@ applyTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "dar
 buildLinks();
 renderOverview();
 renderFlowFields();
+renderParams();
 refreshAll();
 applyInterval();
 </script>

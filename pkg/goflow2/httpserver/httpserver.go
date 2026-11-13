@@ -18,17 +18,19 @@ import (
 
 // Config configures the HTTP server.
 type Config struct {
-	Addr                 string
-	StoreHTTPPath        string
-	TemplatesPath        string
-	TemplateSource       TemplateSource
-	DeviceStatsPath      string
-	QueueStatsPath       string
-	TransportStatsPath   string
-	WebPath              string
-	Transport            string
-	Format               string
-	FlowFields           []protoproducer.FlowField
+	Addr               string
+	StoreHTTPPath      string
+	TemplatesPath      string
+	TemplateSource     TemplateSource
+	DeviceStatsPath    string
+	QueueStatsPath     string
+	TransportStatsPath string
+	WebPath            string
+	Transport          string
+	Format             string
+	FlowFields         []protoproducer.FlowField
+	// Params is the effective runtime configuration shown in the dashboard.
+	Params               []ParamGroup
 	RouterCounter        *metrics.RouterCounter
 	QueueStatsSource     func() []collector.QueueStat
 	TransportStatsSource func() []transport.TargetStat
@@ -122,6 +124,19 @@ func StoreHandler(store StoreSource) http.HandlerFunc {
 	}
 }
 
+// ParamItem is a single configuration entry displayed in the dashboard's
+// "运行参数" card.
+type ParamItem struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// ParamGroup groups related configuration entries under one heading.
+type ParamGroup struct {
+	Group string      `json:"group"`
+	Items []ParamItem `json:"items"`
+}
+
 // dashboardConfig is injected into the dashboard page as JSON so the frontend
 // can discover the endpoints that are actually enabled.
 type dashboardConfig struct {
@@ -136,6 +151,8 @@ type dashboardConfig struct {
 	Transport          string                    `json:"transport"`
 	Format             string                    `json:"format"`
 	FlowFields         []protoproducer.FlowField `json:"flowFields"`
+	// Params holds the effective runtime configuration, grouped for display.
+	Params []ParamGroup `json:"params"`
 }
 
 const dashboardConfigPlaceholder = "__GOFLOW2_CONFIG__"
@@ -261,6 +278,7 @@ func New(cfg Config, store StoreSource, isCollecting func() bool) http.Handler {
 			Transport:          cfg.Transport,
 			Format:             cfg.Format,
 			FlowFields:         cfg.FlowFields,
+			Params:             cfg.Params,
 		}))
 	}
 

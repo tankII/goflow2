@@ -58,6 +58,20 @@ func TestWebDashboardEndpoint(t *testing.T) {
 	require.Contains(t, body, `id="fields-toggle"`)
 	require.Contains(t, body, `id="flowfields"`)
 
+	// Four mutually exclusive views: 收发 / 设备 / 配置 / 模板.
+	// The 配置 view holds the runtime-parameter card and the output-field card.
+	require.Contains(t, body, `id="tab-io"`)
+	require.Contains(t, body, `id="tab-devices"`)
+	require.Contains(t, body, `id="tab-config"`)
+	require.Contains(t, body, `id="tab-templates"`)
+	require.Contains(t, body, `id="view-io"`)
+	require.Contains(t, body, `id="view-devices"`)
+	require.Contains(t, body, `id="view-config"`)
+	require.Contains(t, body, `id="view-templates"`)
+	require.Contains(t, body, `id="params"`)
+	require.Contains(t, body, "运行参数")
+	require.Contains(t, body, "输出字段")
+
 	// The drill-down drawer offers hourly/daily tabs and a line/bar style
 	// selector, and plots packets and flows as separate single-series rows
 	// (each with its own scale) so proportional series cannot coincide.
