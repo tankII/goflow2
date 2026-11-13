@@ -46,7 +46,12 @@ type Config struct {
 
 	TemplatesTTL time.Duration
 
-	TemplatesSweepInterval  time.Duration
+	TemplatesSweepInterval time.Duration
+	// UDPRecvBuffer is the SO_RCVBUF size applied to UDP listen sockets.
+	// The kernel caps this value at net.core.rmem_max, so raising the
+	// sysctl is still required for the setting to take full effect.
+	UDPRecvBuffer int
+
 	TemplatesExtendOnAccess bool
 
 	SamplingRatesTTL            time.Duration
@@ -90,6 +95,7 @@ func BindFlags(fs *flag.FlagSet) *Config {
 	fs.DurationVar(&cfg.SamplingRatesSweepInterval, "sampling.sweep-interval", time.Minute, "Sampling rates expiry sweep interval")
 	fs.BoolVar(&cfg.SamplingRatesExtendOnAccess, "sampling.ttl.extend-on-access", false, "Extend sampling rate TTL on access")
 	fs.StringVar(&cfg.MappingFile, "mapping", "", "Configuration file for custom mappings")
+	fs.IntVar(&cfg.UDPRecvBuffer, "udp.recv.buffer", 4*1024*1024, "SO_RCVBUF for UDP listen sockets in bytes (0 disables; capped by net.core.rmem_max)")
 
 	return cfg
 }

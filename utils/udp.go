@@ -64,6 +64,7 @@ type UDPReceiver struct {
 
 	blocking     bool
 	dispatchSize int
+	recvBuffer   int // SO_RCVBUF，单位字节；0 表示不设置
 
 	workers int
 	sockets int
@@ -83,6 +84,18 @@ type UDPReceiverConfig struct {
 	Sockets   int
 	Blocking  bool
 	QueueSize int
+
+	// RecvBuffer 是每个 UDP 监听 socket 的 SO_RCVBUF 字节数，0 表示不设置。
+	//
+	// 内核 socket 接收缓冲区是应用层队列之前的「一级缓冲」：包先落在
+	// 内核缓冲区，再被读进 dispatch 队列。默认缓冲仅 256KB（约 170 个
+	// 1500B 包），突发流量会在内核层就溢出（RcvbufErrors），根本到不了
+	// 能吸收上万包的应用层队列——表现为「应用层无积压、内核却在丢包」。
+	// 调大该值可显著降低内核层丢包。
+	//
+	// 注意：内核会把该值截断到 net.core.rmem_max，因此需要同步调大
+	// sysctl 才能完全生效（超出部分被静默截断）。
+	RecvBuffer int
 
 	ReceiverCallback ReceiverCallback
 }
@@ -112,6 +125,7 @@ func NewUDPReceiver(cfg *UDPReceiverConfig) (*UDPReceiver, error) {
 		r.workers = cfg.Workers
 		dispatchSize = cfg.QueueSize
 		r.blocking = cfg.Blocking
+		r.recvBuffer = cfg.RecvBuffer
 		r.cb = cfg.ReceiverCallback
 	}
 	r.dispatchSize = dispatchSize
@@ -176,6 +190,18 @@ func (r *UDPReceiver) receive(addr string, port int, started chan bool) error {
 	if err != nil {
 		return fmt.Errorf("udp listen %s:%d: %w", addr, port, err)
 	}
+
+	// 调大 socket 接收缓冲区，降低内核层丢包（RcvbufErrors）。
+	// 内核会把请求值截断到 net.core.rmem_max，超出时静默生效为上限值，
+	// 因此设置失败不应中断启动。
+	if r.recvBuffer > 0 {
+		if udpconn, ok := pconn.(*net.UDPConn); ok {
+			if err := udpconn.SetReadBuffer(r.recvBuffer); err != nil {
+				r.logError(fmt.Errorf("set udp recv buffer %d: %w", r.recvBuffer, err))
+			}
+		}
+	}
+
 	close(started) // indicates receiver is setup
 
 	var closeOnce sync.Once
@@ -219,7 +245,9 @@ func (r *UDPReceiver) receiveRoutine(udpconn *net.UDPConn) (err error) {
 			return fmt.Errorf("udp read: %w", err)
 		}
 		pkt.dst = localAddr
-		pkt.received = time.Now().UTC()
+		// 收到时间戳会作为产出字段 time_received_ns，故必须记录。
+		// 不做 .UTC() 转换：UnixNano() 与时区无关，省去每次的时区换算开销。
+		pkt.received = time.Now()
 		if pkt.size == 0 {
 			// error
 			continue

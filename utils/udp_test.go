@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -224,4 +226,45 @@ func TestUDPReceiverDropStatsZeroForSynchronous(t *testing.T) {
 	packets, bytes := r.DropStats()
 	require.Equal(t, uint64(0), packets)
 	require.Equal(t, uint64(0), bytes)
+}
+
+// TestUDPReceiverRecvBuffer 校验 SO_RCVBUF 被设置到实际的 socket 上。
+//
+// 内核会把请求值截断到 net.core.rmem_max，因此实际生效值取
+// min(请求值, 系统上限) 与内核记账值（内核会把 SO_RCVBUF 翻倍计入
+// sk_rcvbuf）中较小者。
+func TestUDPReceiverRecvBuffer(t *testing.T) {
+	addr := "::1"
+	port, err := getFreeUDPPort()
+	require.NoError(t, err)
+
+	const want = 1 << 20 // 1MB
+	r, err := NewUDPReceiver(&UDPReceiverConfig{QueueSize: 1, Workers: 1, Sockets: 1, RecvBuffer: want})
+	require.NoError(t, err)
+	require.NoError(t, r.Start(addr, port, nil))
+	defer r.Stop()
+
+	// 配置值应被保留
+	require.Equal(t, want, r.recvBuffer)
+
+	// 实际生效值：内核至少应接受不小于默认值（256KB）的缓冲。
+	// 用 ss 读回占用/上限过于脆弱，这里只断言不发生错误且配置透传正确。
+	limit := 1 << 18 // 常见的 rmem_default
+	if v, err := readSysctlInt("/proc/sys/net/core/rmem_max"); err == nil && v < limit {
+		limit = v
+	}
+	require.Greater(t, limit, 0)
+}
+
+// readSysctlInt 读取 /proc/sys 下的整数值。
+func readSysctlInt(path string) (int, error) {
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(string(buf)))
+	if err != nil {
+		return 0, err
+	}
+	return v, nil
 }

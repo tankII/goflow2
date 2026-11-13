@@ -142,6 +142,7 @@ func New(cfg *config.Config) (*App, error) {
 		RouterCounter: deviceRC,
 		ErrCnt:        cfg.ErrCnt,
 		ErrInt:        cfg.ErrInt,
+		RecvBuffer:    cfg.UDPRecvBuffer,
 		Logger:        logger,
 	})
 	if err != nil {

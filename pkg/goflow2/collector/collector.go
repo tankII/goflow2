@@ -29,7 +29,9 @@ type Config struct {
 	RouterCounter *metrics.RouterCounter
 	ErrCnt        int
 	ErrInt        time.Duration
-	Logger        *slog.Logger
+	// RecvBuffer is the SO_RCVBUF size for UDP listen sockets (0 disables).
+	RecvBuffer int
+	Logger     *slog.Logger
 }
 
 // Collector manages receivers and flow pipes.
@@ -43,6 +45,9 @@ type Collector struct {
 	logger    *slog.Logger
 
 	routerCounter *metrics.RouterCounter
+
+	// recvBuffer 是每个 UDP 监听 socket 的 SO_RCVBUF 字节数，0 表示不设置。
+	recvBuffer int
 
 	receivers       []*utils.UDPReceiver
 	queueReporters  []queueReporter
@@ -116,6 +121,7 @@ func New(cfg Config) (*Collector, error) {
 		logger:        cfg.Logger,
 		templateStore: cfg.TemplateStore,
 		routerCounter: cfg.RouterCounter,
+		recvBuffer:    cfg.RecvBuffer,
 	}, nil
 }
 
@@ -181,6 +187,7 @@ func (c *Collector) Start() error {
 			Workers:          listenCfg.NumWorkers,
 			QueueSize:        listenCfg.QueueSize,
 			Blocking:         listenCfg.Blocking,
+			RecvBuffer:       c.recvBuffer,
 			ReceiverCallback: c.receiverCallback(),
 		}
 		recv, err := utils.NewUDPReceiver(recvCfg)
