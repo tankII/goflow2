@@ -67,8 +67,8 @@
 # 的锁竞争（表现为跑久了 CPU 逐步上升、flow_process_nf_template_entries 单调增长）。
 # NetFlow v9 / IPFIX 模板的标准刷新周期为 60s，建议设为 1h，留足余量。
 # 取值过小会反复丢失模板并触发 fallback 解码，请勿低于刷新周期。
-# [[ -z "${GOFLOW2_TEMPLATES_TTL:-}" ]] && export GOFLOW2_TEMPLATES_TTL=1h
-# [[ -z "${GOFLOW2_SAMPLING_TTL:-}" ]] && export GOFLOW2_SAMPLING_TTL=1h
+[[ -z "${GOFLOW2_TEMPLATES_TTL:-}" ]] && export GOFLOW2_TEMPLATES_TTL=1h
+[[ -z "${GOFLOW2_SAMPLING_TTL:-}" ]] && export GOFLOW2_SAMPLING_TTL=1h
 # 访问模板时是否续期（默认关闭）。
 #
 # 现网实测：不开启时 template_not_found 累计达数百万次（117.184.216.1 约
@@ -80,8 +80,8 @@
 #
 # 开启后，模板在被使用时会续期——正在收流量的模板永不过期，只有真正
 # 空闲的观测域才会被回收，从根上消除该类丢数据。
-# [[ -z "${GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS=1
-# [[ -z "${GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS=1
+[[ -z "${GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS=1
+[[ -z "${GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS=1
 
 # ── UDP socket 接收缓冲区（SO_RCVBUF）────────────────────────
 # 背景：内核 socket 接收缓冲区是应用层队列之前的「一级缓冲」——包先落在
@@ -96,7 +96,7 @@
 #
 # 内存代价：每个 socket 占用该值（4 个 socket × 4MB = 16MB 内核内存）。
 # 设为 0 表示不设置，沿用系统默认值。
-# [[ -z "${GOFLOW2_UDP_RECV_BUFFER:-}" ]] && export GOFLOW2_UDP_RECV_BUFFER=4194304
+[[ -z "${GOFLOW2_UDP_RECV_BUFFER:-}" ]] && export GOFLOW2_UDP_RECV_BUFFER=4194304
 
 # ── Go 运行时调优（可选）────────────────────────────────────
 # 背景：现网实测分配速率约 377 MiB/s、GC 673 次/分钟，且"堆只涨不降"

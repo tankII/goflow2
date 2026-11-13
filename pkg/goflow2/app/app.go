@@ -50,6 +50,7 @@ func New(cfg *config.Config) (*App, error) {
 		"log_format", cfg.Logging.Format,
 		"log_file", cfg.Logging.File,
 		"listen", cfg.ListenAddresses,
+		"udp_recv_buffer", cfg.UDPRecvBuffer,
 		"http_addr", cfg.Addr,
 		"format", cfg.Format,
 		"transport", cfg.Transport,
