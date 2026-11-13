@@ -28,7 +28,7 @@ func TestQueueStatsEndpoint(t *testing.T) {
 	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	// 应用层丢包计数随队列统计一并返回
 	require.JSONEq(t, `[{"scheme":"netflow","hostname":"","port":2055,"depth":2,"capacity":4,"utilization":0.5,
-		"dropped_packets":17,"dropped_bytes":20400}]`, rec.Body.String())
+		"dropped_packets":17,"dropped_bytes":20400,"truncated_packets":0}]`, rec.Body.String())
 }
 
 func TestQueueStatsEndpointDefaultPath(t *testing.T) {

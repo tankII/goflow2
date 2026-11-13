@@ -44,13 +44,62 @@ func normalizeAddrPort(addrPort netip.AddrPort) netip.AddrPort {
 	return addrPort
 }
 
-var packetPool = sync.Pool{
-	New: func() any {
-		return &udpPacket{
-			payload: make([]byte, 9000),
-		}
-	},
+// defaultPacketSize 是单个 UDP 报文缓冲区的默认字节数。
+//
+// NetFlow v9 over UDP 的报文长度取决于设备：多数设备受 MTU 限制在 1500
+// 字节以内，但部分设备会把多个模板/记录打包到更大的报文里。调小该值
+// 可降低每包的内存占用，但超过该长度的报文会被内核截断而静默损坏——
+// 因此必须先用 diag.sh 实测现网报文长度分布，再决定是否调小。
+const defaultPacketSize = 9000
+
+// packetPool 是报文缓冲的回收池。
+//
+// 这里刻意不用 sync.Pool：它的内容会被 GC 回收（两轮 GC 后彻底丢弃），
+// 而接收协程每收一个包就要 Get 一个 9000 字节的缓冲区、worker 用完再
+// Put 回去。在高包率下 GC 一旦清空回收池，接收协程就要重新分配 9000
+// 字节；在内存紧张的机器上这种分配可能触发同步回收（direct reclaim），
+// 接收协程被拖住，内核 socket 缓冲区随之溢出——表现为「应用层队列
+// 无积压，内核 RcvbufErrors 却在涨」。
+//
+// 带缓冲的 channel 不会被 GC 清理，稳态下复用率显著更高。
+type packetPoolT struct {
+	ch         chan *udpPacket
+	packetSize int
 }
+
+func newPacketPool(capacity int) *packetPoolT {
+	return &packetPoolT{ch: make(chan *udpPacket, capacity), packetSize: defaultPacketSize}
+}
+
+// setPacketSize 设置后续新分配缓冲区的长度。必须在接收开始前调用。
+func (p *packetPoolT) setPacketSize(n int) {
+	if n > 0 {
+		p.packetSize = n
+	}
+}
+
+// Get 取一个报文缓冲区，池空时新分配。
+func (p *packetPoolT) Get() *udpPacket {
+	select {
+	case pkt := <-p.ch:
+		return pkt
+	default:
+		return &udpPacket{payload: make([]byte, p.packetSize)}
+	}
+}
+
+// Put 归还报文缓冲区；池满则丢弃，交由 GC 回收。
+func (p *packetPoolT) Put(pkt *udpPacket) {
+	if pkt == nil {
+		return
+	}
+	select {
+	case p.ch <- pkt:
+	default:
+	}
+}
+
+var packetPool = newPacketPool(1024)
 
 // UDPReceiver receives UDP packets and dispatches them to decoders.
 type UDPReceiver struct {
@@ -75,6 +124,12 @@ type UDPReceiver struct {
 	droppedPackets atomic.Uint64
 	droppedBytes   atomic.Uint64
 
+	// truncatedPackets 统计可能被截断的报文数。
+	// 当 UDP 报文长度不小于接收缓冲区时，内核只交付缓冲区大小的部分、
+	// 丢弃其余字节且不报错——数据静默损坏。缓冲区配得偏小时该计数会增长，
+	// 是「缓冲区设置过小」的告警信号。
+	truncatedPackets atomic.Uint64
+
 	cb ReceiverCallback
 }
 
@@ -84,6 +139,13 @@ type UDPReceiverConfig struct {
 	Sockets   int
 	Blocking  bool
 	QueueSize int
+
+	// PacketSize 是单个 UDP 报文缓冲区的字节数，0 表示使用默认值。
+	//
+	// 调小可降低每包的内存占用（缓冲区按报文数分配），但超过该长度的
+	// 报文会被内核截断、静默损坏。必须先用 diag.sh 实测现网报文长度
+	// 分布后再调整；调整后若 TruncatedPackets 增长即为配小了。
+	PacketSize int
 
 	// RecvBuffer 是每个 UDP 监听 socket 的 SO_RCVBUF 字节数，0 表示不设置。
 	//
@@ -126,6 +188,9 @@ func NewUDPReceiver(cfg *UDPReceiverConfig) (*UDPReceiver, error) {
 		dispatchSize = cfg.QueueSize
 		r.blocking = cfg.Blocking
 		r.recvBuffer = cfg.RecvBuffer
+		if cfg.PacketSize > 0 {
+			packetPool.setPacketSize(cfg.PacketSize)
+		}
 		r.cb = cfg.ReceiverCallback
 	}
 	r.dispatchSize = dispatchSize
@@ -179,6 +244,12 @@ func (r *UDPReceiver) QueueStats() (depth int, capacity int) {
 // 仅统计 dispatch 队列满而丢弃的报文，不含内核层丢包。
 func (r *UDPReceiver) DropStats() (packets uint64, bytes uint64) {
 	return r.droppedPackets.Load(), r.droppedBytes.Load()
+}
+
+// TruncatedPackets 返回可能被截断的报文数。
+// 增长说明接收缓冲区配小了，应调大或先实测报文长度分布。
+func (r *UDPReceiver) TruncatedPackets() uint64 {
+	return r.truncatedPackets.Load()
 }
 
 func (r *UDPReceiver) receive(addr string, port int, started chan bool) error {
@@ -238,7 +309,7 @@ func (r *UDPReceiver) receiveRoutine(udpconn *net.UDPConn) (err error) {
 	localAddr, _ := udpconn.LocalAddr().(*net.UDPAddr)
 
 	for {
-		pkt := packetPool.Get().(*udpPacket)
+		pkt := packetPool.Get()
 		pkt.size, pkt.src, err = udpconn.ReadFromUDP(pkt.payload)
 		if err != nil {
 			packetPool.Put(pkt)
@@ -251,6 +322,11 @@ func (r *UDPReceiver) receiveRoutine(udpconn *net.UDPConn) (err error) {
 		if pkt.size == 0 {
 			// error
 			continue
+		}
+		if pkt.size >= len(pkt.payload) {
+			// 读满了整个缓冲区：报文可能比缓冲区更长，其余字节已被内核
+			// 丢弃且不报错。计下来，避免数据静默损坏而无人察觉。
+			r.truncatedPackets.Add(1)
 		}
 
 		if r.blocking {

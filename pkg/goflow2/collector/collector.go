@@ -31,6 +31,8 @@ type Config struct {
 	ErrInt        time.Duration
 	// RecvBuffer is the SO_RCVBUF size for UDP listen sockets (0 disables).
 	RecvBuffer int
+	// PacketSize is the per-packet payload buffer size (0 = default).
+	PacketSize int
 	Logger     *slog.Logger
 }
 
@@ -48,6 +50,8 @@ type Collector struct {
 
 	// recvBuffer 是每个 UDP 监听 socket 的 SO_RCVBUF 字节数，0 表示不设置。
 	recvBuffer int
+	// packetSize 是单个 UDP 报文缓冲区的字节数，0 表示用默认值。
+	packetSize int
 
 	receivers       []*utils.UDPReceiver
 	queueReporters  []queueReporter
@@ -80,6 +84,10 @@ type QueueStat struct {
 	// 无法在此计数），内核层需用 netstat -su / nstat 单独观察。
 	DroppedPackets uint64 `json:"dropped_packets"`
 	DroppedBytes   uint64 `json:"dropped_bytes"`
+
+	// TruncatedPackets 统计可能被截断的报文数。增长说明接收缓冲区配小了，
+	// 报文超出部分已被内核丢弃且不报错——数据静默损坏。
+	TruncatedPackets uint64 `json:"truncated_packets"`
 }
 
 // QueueStats returns the dispatch queue usage for each listener.
@@ -93,14 +101,15 @@ func (c *Collector) QueueStats() []QueueStat {
 		}
 		droppedPackets, droppedBytes := rep.recv.DropStats()
 		stats = append(stats, QueueStat{
-			Scheme:         rep.scheme,
-			Hostname:       rep.hostname,
-			Port:           rep.port,
-			Depth:          depth,
-			Capacity:       capacity,
-			Utilization:    utilization,
-			DroppedPackets: droppedPackets,
-			DroppedBytes:   droppedBytes,
+			Scheme:           rep.scheme,
+			Hostname:         rep.hostname,
+			Port:             rep.port,
+			Depth:            depth,
+			Capacity:         capacity,
+			Utilization:      utilization,
+			DroppedPackets:   droppedPackets,
+			DroppedBytes:     droppedBytes,
+			TruncatedPackets: rep.recv.TruncatedPackets(),
 		})
 	}
 	return stats
@@ -122,6 +131,7 @@ func New(cfg Config) (*Collector, error) {
 		templateStore: cfg.TemplateStore,
 		routerCounter: cfg.RouterCounter,
 		recvBuffer:    cfg.RecvBuffer,
+		packetSize:    cfg.PacketSize,
 	}, nil
 }
 
@@ -188,6 +198,7 @@ func (c *Collector) Start() error {
 			QueueSize:        listenCfg.QueueSize,
 			Blocking:         listenCfg.Blocking,
 			RecvBuffer:       c.recvBuffer,
+			PacketSize:       c.packetSize,
 			ReceiverCallback: c.receiverCallback(),
 		}
 		recv, err := utils.NewUDPReceiver(recvCfg)

@@ -136,7 +136,58 @@ fi
 sec "2. UDP socket 缓冲区占用"
 echo "Recv-Q 是当前已占用字节；用 ss -m 可看到 skmem 的 (已占用,上限)。"
 echo "若上限远小于期望值，说明 SO_RCVBUF 未生效（受 rmem_max 限制）。"
-ss -uanm 2>/dev/null | grep -E "Recv-Q|${LISTEN_PORT}" || echo "（ss 不可用或无相关监听）"
+# 注意：ss -m 的 skmem 行不含端口号也不含表头文字，必须用 -A1 把
+# 它跟在上方的 socket 行后面，否则最关键的缓冲上限（rb）会被过滤掉。
+ss -uanm 2>/dev/null | grep -A1 -E "Recv-Q|${LISTEN_PORT}" || echo "（ss 不可用或无相关监听）"
+
+sec "2b. 到达报文的长度分布（用于确定接收缓冲区该配多大）"
+# 报文缓冲按 9000 字节分配，若实际报文远小于此则每包都在浪费内存；
+# 反之若实际报文超过缓冲则会被内核静默截断、数据损坏。
+# 这里实测分布，不依赖任何历史抓包样本。
+if ! command -v tcpdump >/dev/null 2>&1; then
+    echo "（无 tcpdump，跳过）"
+elif [[ -z "$PID" ]]; then
+    echo "（未找到采集器进程，跳过）"
+else
+    CAP=/tmp/goflow2-diag-pkt.pcap
+    echo "采样 200 个报文（约 10 秒）…"
+    if timeout 20 tcpdump -i any -nn -s 0 -c 200 -w "$CAP" \
+            "udp dst port ${LISTEN_PORT}" 2>/dev/null; then
+        if [[ -s "$CAP" ]]; then
+            # tcpdump -r 输出里的 "length N" 是 UDP 负载长度
+            tcpdump -r "$CAP" -n 2>/dev/null \
+                | grep -oE 'length [0-9]+' | awk '{print $2}' | sort -n > /tmp/goflow2-diag-pkt.len
+            CNT=$(wc -l < /tmp/goflow2-diag-pkt.len)
+            if [[ "$CNT" -gt 0 ]]; then
+                echo "采样报文数: $CNT"
+                echo "  最小: $(head -1 /tmp/goflow2-diag-pkt.len) 字节"
+                echo "  中位数: $(awk 'NR==int(NR/2)+1' /tmp/goflow2-diag-pkt.len 2>/dev/null || sed -n "$((CNT/2))p" /tmp/goflow2-diag-pkt.len) 字节"
+                echo "  最大: $(tail -1 /tmp/goflow2-diag-pkt.len) 字节"
+                echo "  P95: $(sed -n "$((CNT*95/100))p" /tmp/goflow2-diag-pkt.len) 字节"
+                echo "  P99: $(sed -n "$((CNT*99/100))p" /tmp/goflow2-diag-pkt.len) 字节"
+                MAX=$(tail -1 /tmp/goflow2-diag-pkt.len)
+                echo
+                echo "对照：当前接收缓冲区 9000 字节（-udp.recv.packet.size 可调）"
+                if [[ "$MAX" -ge 9000 ]]; then
+                    echo "  ⚠ 最大报文 $MAX 字节 ≥ 缓冲区 9000，可能发生截断！"
+                    echo "    请调大 -udp.recv.packet.size，并观察 /queue-stats 的 truncated_packets"
+                else
+                    echo "  ✓ 最大报文 $MAX 字节 < 缓冲区 9000，无截断风险"
+                    echo "    若想省内存，可将 -udp.recv.packet.size 设为略大于 $MAX（如 $(( (MAX/256+1)*256 ))）"
+                    echo "    注意：调小后若 truncated_packets 增长即为配小了"
+                fi
+            else
+                echo "（未捕获到报文，可能该端口此刻无流量）"
+            fi
+            rm -f "$CAP" /tmp/goflow2-diag-pkt.len
+        else
+            echo "（未捕获到报文）"
+        fi
+    else
+        echo "（tcpdump 采样失败，可能需要 root 或 CAP_NET_RAW 权限）"
+        echo "  可改用：sudo tcpdump -i any -nn -s 0 -c 200 'udp dst port ${LISTEN_PORT}'"
+    fi
+fi
 
 sec "3. 采样开始前的累计计数"
 UDP1=$(udp_snap); SOFT1=$(softnet_snap); NIC1=$(nic_snap)

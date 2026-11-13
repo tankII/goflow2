@@ -52,6 +52,9 @@ type Config struct {
 	// sysctl is still required for the setting to take full effect.
 	UDPRecvBuffer int
 
+	// UDPPacketSize is the per-packet payload buffer size (0 = default).
+	UDPPacketSize int
+
 	TemplatesExtendOnAccess bool
 
 	SamplingRatesTTL            time.Duration
@@ -96,6 +99,7 @@ func BindFlags(fs *flag.FlagSet) *Config {
 	fs.BoolVar(&cfg.SamplingRatesExtendOnAccess, "sampling.ttl.extend-on-access", false, "Extend sampling rate TTL on access")
 	fs.StringVar(&cfg.MappingFile, "mapping", "", "Configuration file for custom mappings")
 	fs.IntVar(&cfg.UDPRecvBuffer, "udp.recv.buffer", 4*1024*1024, "SO_RCVBUF for UDP listen sockets in bytes (0 disables; capped by net.core.rmem_max)")
+	fs.IntVar(&cfg.UDPPacketSize, "udp.recv.packet.size", 0, "UDP payload buffer size in bytes (0 = default 9000; smaller saves memory but truncates larger datagrams)")
 
 	return cfg
 }

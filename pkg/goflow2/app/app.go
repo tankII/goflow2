@@ -257,6 +257,7 @@ func New(cfg *config.Config) (*App, error) {
 		ErrCnt:        cfg.ErrCnt,
 		ErrInt:        cfg.ErrInt,
 		RecvBuffer:    cfg.UDPRecvBuffer,
+		PacketSize:    cfg.UDPPacketSize,
 		Logger:        logger,
 	})
 	if err != nil {

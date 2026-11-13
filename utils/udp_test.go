@@ -268,3 +268,45 @@ func readSysctlInt(path string) (int, error) {
 	}
 	return v, nil
 }
+
+// TestPacketPoolReuse 校验回收池能复用缓冲区。
+//
+// 曾经的实现用 sync.Pool，其内容会被 GC 回收，高包率下接收协程频繁
+// 重新分配 9000 字节缓冲；现改为 channel 池，不会被 GC 清理。
+func TestPacketPoolReuse(t *testing.T) {
+	p := newPacketPool(4)
+	a := p.Get()
+	require.NotNil(t, a)
+	require.Len(t, a.payload, defaultPacketSize)
+	p.Put(a)
+
+	// 归还后应能取回同一个对象，不触发新分配
+	b := p.Get()
+	require.Same(t, a, b)
+}
+
+// TestPacketPoolSetSize 校验可调包长，且新分配的缓冲区随之变化。
+func TestPacketPoolSetSize(t *testing.T) {
+	p := newPacketPool(2)
+	p.setPacketSize(2048)
+	require.Equal(t, 2048, p.packetSize)
+	require.Len(t, p.Get().payload, 2048)
+
+	// 非正值应被忽略，保持默认值
+	p.setPacketSize(0)
+	require.Equal(t, 2048, p.packetSize)
+}
+
+// TestTruncatedPacketsCounted 校验截断检测。
+//
+// 当 UDP 报文长度不小于接收缓冲区时，内核只交付缓冲区大小的部分并丢弃
+// 其余字节且不报错——数据静默损坏。该计数用于发现「缓冲区配小了」。
+func TestTruncatedPacketsCounted(t *testing.T) {
+	r, err := NewUDPReceiver(&UDPReceiverConfig{QueueSize: 1, Workers: 1, Sockets: 1})
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), r.TruncatedPackets())
+
+	// 模拟：读满缓冲区视为可能被截断
+	r.truncatedPackets.Add(1)
+	require.Equal(t, uint64(1), r.TruncatedPackets())
+}

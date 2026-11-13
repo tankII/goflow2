@@ -33,7 +33,7 @@ func TestCollectorQueueStats(t *testing.T) {
 	b, err := json.Marshal(stats)
 	require.NoError(t, err)
 	require.JSONEq(t, `[{"scheme":"netflow","hostname":"127.0.0.1","port":2055,"depth":0,"capacity":4,
-		"utilization":0,"dropped_packets":0,"dropped_bytes":0}]`, string(b))
+		"utilization":0,"dropped_packets":0,"dropped_bytes":0,"truncated_packets":0}]`, string(b))
 }
 
 func TestCollectorQueueStatsEmpty(t *testing.T) {
