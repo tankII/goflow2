@@ -68,10 +68,11 @@ func csvEscape(v string, delim string) string {
 // Format marshals the payload into a single CSV row. The row carries no
 // trailing newline: transports own record separation via their separator flag.
 func (d *CSVDriver) Format(data interface{}) ([]byte, []byte, error) {
+	// key 由调用方按需提供：消息 key 的计算需要反射 + 格式化，
+	// 而 netcat/file 并不使用 key（只有 Kafka 用它做分区），
+	// 无条件计算在高包率下是可观的无用开销。此处一律返回 nil，
+	// 由 utils.flowpipe 在传输确实需要时再补算。
 	var key []byte
-	if dataIf, ok := data.(interface{ Key() []byte }); ok {
-		key = dataIf.Key()
-	}
 
 	if ap, ok := data.(csvRowAppender); ok {
 		bp := csvScratch.Get().(*[]byte)

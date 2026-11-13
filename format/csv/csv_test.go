@@ -79,9 +79,11 @@ func TestFormatAppendPathReuse(t *testing.T) {
 
 func TestFormatRow(t *testing.T) {
 	d := &CSVDriver{delimiter: "|"}
+	// 格式驱动不再计算消息 key：key 的计算需要反射 + 格式化，而 netcat/file
+	// 并不使用它。key 改由管道层在传输确实需要时补算。
 	key, out, err := d.Format(&testRow{values: []string{"1.2.3.4", "443", "a|b", "c\"d"}})
 	assert.Nil(t, err)
-	assert.Equal(t, []byte("k"), key)
+	assert.Nil(t, key)
 	assert.Equal(t, "1.2.3.4|443|\"a|b\"|\"c\"\"d\"", string(out))
 
 	_, _, err = d.Format("not a row")

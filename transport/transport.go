@@ -58,10 +58,44 @@ type TransportInterface interface {
 	Send(key, data []byte) error
 }
 
+// KeyAwareTransport 是可选接口：声明该传输是否真的使用消息 key。
+//
+// 消息 key 的计算需要反射 + 格式化（见 ProtoProducerMessage.Key），
+// 在高包率下开销可观。而 netcat 走轮询、file 直接落盘，两者都不使用 key；
+// 只有 Kafka 用它做分区键。故让驱动自己声明，避免为不需要的用途付出代价。
+//
+// 未实现该接口的传输按「需要 key」处理，保持既有行为不变。
+type KeyAwareTransport interface {
+	// NeedsKey 报告该传输是否需要消息 key。
+	NeedsKey() bool
+}
+
+// TransportNeedsKey 报告给定传输是否需要消息 key。
+func TransportNeedsKey(t TransportInterface) bool {
+	if t == nil {
+		return false
+	}
+	if d, ok := t.(KeyAwareTransport); ok {
+		return d.NeedsKey()
+	}
+	return true
+}
+
 // Transport is a named transport wrapper used by the registry.
 type Transport struct {
 	TransportDriver
 	name string
+}
+
+// NeedsKey 转发给底层驱动，使包装后的传输同样能声明是否需要 key。
+func (t *Transport) NeedsKey() bool {
+	if t == nil || t.TransportDriver == nil {
+		return false
+	}
+	if d, ok := t.TransportDriver.(KeyAwareTransport); ok {
+		return d.NeedsKey()
+	}
+	return true
 }
 
 // Close calls the driver Close and wraps errors with transport metadata.

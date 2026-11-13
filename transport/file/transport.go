@@ -83,6 +83,10 @@ func (d *FileDriver) Init() error {
 // Send writes a formatted message and separator to the destination.
 // The data+separator pair is written under the write lock so that
 // concurrent Send calls do not interleave and merge lines.
+// NeedsKey 报告该驱动是否需要消息 key。
+// file 直接落盘，不使用 key。
+func (d *FileDriver) NeedsKey() bool { return false }
+
 func (d *FileDriver) Send(key, data []byte) error {
 	d.lock.Lock()
 	defer d.lock.Unlock()

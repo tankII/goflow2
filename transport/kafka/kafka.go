@@ -334,6 +334,10 @@ func (d *KafkaDriver) Init() error {
 }
 
 // Send publishes a message to Kafka.
+// NeedsKey 报告该驱动是否需要消息 key。
+// Kafka 用 key 作为分区键，保证同一 key 的消息落到同一分区。
+func (d *KafkaDriver) NeedsKey() bool { return true }
+
 func (d *KafkaDriver) Send(key, data []byte) error {
 	d.producer.Input() <- &sarama.ProducerMessage{
 		Topic: d.kafkaTopic,

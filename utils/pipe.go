@@ -48,6 +48,14 @@ func (p *flowpipe) formatSend(flowMessageSet []producer.ProducerMessage) error {
 				return fmt.Errorf("format message: %w", err)
 			}
 			if p.transport != nil {
+				// 消息 key 的计算要走反射 + 格式化，只有 Kafka 这类按 key
+				// 分区的传输才需要；netcat/file 用不到。故此处按需补算，
+				// 避免在每条记录上付出无用开销。
+				if key == nil && transport.TransportNeedsKey(p.transport) {
+					if k, ok := msg.(interface{ Key() []byte }); ok {
+						key = k.Key()
+					}
+				}
 				if err = p.transport.Send(key, data); err != nil {
 					return fmt.Errorf("send message: %w", err)
 				}

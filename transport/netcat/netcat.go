@@ -202,6 +202,10 @@ func ioClose(conn io.Closer) {
 }
 
 // Send delivers a record to a single target picked round-robin.
+// NeedsKey 报告该驱动是否需要消息 key。
+// netcat 按轮询把消息发往各目标，不按 key 分区，故不需要。
+func (d *NetcatDriver) NeedsKey() bool { return false }
+
 func (d *NetcatDriver) Send(key, data []byte) error {
 	if len(d.targets) == 0 {
 		return nil
