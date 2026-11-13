@@ -83,6 +83,22 @@
 [[ -z "${GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_TEMPLATES_TTL_EXTEND_ON_ACCESS=1
 [[ -z "${GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS:-}" ]] && export GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS=1
 
+# ── 模板/采样率持久化 ─────────────────────────────────────────
+# 模板与采样率写入本地文件，下次启动时预加载。
+#
+# 现网实测：不持久化时，采集器每次重启都要等设备重发模板，
+# 在此之前的数据因找不到模板而无法解码、直接丢弃——实测 117.184.216.1
+# 与 .2 各丢约 84 万与 132 万个流集（重启瞬态）。
+#
+# 开启后重启不再丢这部分数据。文件里同时保存模板与采样率，
+# 与 /store 接口输出的是同一份持久化文档。
+#
+# 注意：预加载的是上次退出时的模板。设备若在此期间重发了新模板，
+# 启动后仍会收到并覆盖，不影响正确性。
+#
+# [[ -z "${GOFLOW2_STORE_JSON_PATH:-}" ]] && export GOFLOW2_STORE_JSON_PATH=/home/ipms/goflow2/store.json
+# [[ -z "${GOFLOW2_STORE_JSON_INTERVAL:-}" ]] && export GOFLOW2_STORE_JSON_INTERVAL=1m
+
 # ── UDP socket 接收缓冲区（SO_RCVBUF）────────────────────────
 # 背景：内核 socket 接收缓冲区是应用层队列之前的「一级缓冲」——包先落在
 # 内核缓冲区，再被读进 dispatch 队列。默认仅 256KB（约 170 个 1500B 包），
@@ -97,6 +113,17 @@
 # 内存代价：每个 socket 占用该值（4 个 socket × 4MB = 16MB 内核内存）。
 # 设为 0 表示不设置，沿用系统默认值。
 [[ -z "${GOFLOW2_UDP_RECV_BUFFER:-}" ]] && export GOFLOW2_UDP_RECV_BUFFER=4194304
+
+# 单个 UDP 报文缓冲区的字节数（0＝默认 9000）。
+#
+# 现网实测报文长度落在 1344–1384 字节，9000 缓冲区里 85% 是浪费。
+# 调小可降低每包内存占用，并把「队列打满」时的最坏内存从 450MB 降到
+# 约 100MB（50000 槽 × 9000 → × 2048）。
+#
+# 风险：超过该长度的报文会被内核静默截断、数据损坏。必须先用
+# diag.sh 实测长度分布留足余量（如最大 1384 时可设 2048），
+# 并在面板「接收队列」的「疑似截断」列确认计数为 0。
+# [[ -z "${GOFLOW2_UDP_RECV_PACKET_SIZE:-}" ]] && export GOFLOW2_UDP_RECV_PACKET_SIZE=2048
 
 # ── Go 运行时调优（可选）────────────────────────────────────
 # 背景：现网实测分配速率约 377 MiB/s、GC 673 次/分钟，且"堆只涨不降"

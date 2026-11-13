@@ -19,6 +19,10 @@
 #   GOFLOW2_MAPPING         mapping.yaml 路径
 #   GOFLOW2_LOGLEVEL        日志级别，默认 info
 #   GOFLOW2_UDP_RECV_BUFFER   UDP socket 接收缓冲区字节数（SO_RCVBUF，默认 4MB；受 net.core.rmem_max 限制）
+#   GOFLOW2_UDP_RECV_PACKET_SIZE 单个 UDP 报文缓冲区字节数（0＝默认 9000；调小需先实测长度分布）
+#   GOFLOW2_UDP_RECV_PACKET_SIZE 单个 UDP 报文缓冲区字节数（0＝默认 9000；调小需先实测长度分布）
+#   GOFLOW2_STORE_JSON_PATH   模板/采样率持久化文件路径（空＝不持久化）
+#   GOFLOW2_STORE_JSON_INTERVAL 持久化文件写入间隔，如 1m
 #   GOFLOW2_PID_FILE        pid 文件路径
 #   GOFLOW2_TRANSPORT=file 时生效（见 setenv.sh 示例）
 #     GOFLOW2_FILE_PATH      flow 输出文件（默认空 → stdout）
@@ -282,6 +286,14 @@ _build_store_args() {
         "")      ;; # 未设置 → 跳过（默认关闭）
         *)       args="${args} -sampling.ttl.extend-on-access=${GOFLOW2_SAMPLING_TTL_EXTEND_ON_ACCESS}" ;;
     esac
+    # 模板/采样率持久化：文件写入的同时会在下次启动时预加载。
+    # 采集器重启后模板不丢，避免设备重发模板之前的数据因解不出模板而丢弃。
+    if [[ -n "${GOFLOW2_STORE_JSON_PATH:-}" ]]; then
+        args="${args} -store.json.path ${GOFLOW2_STORE_JSON_PATH}"
+    fi
+    if [[ -n "${GOFLOW2_STORE_JSON_INTERVAL:-}" ]]; then
+        args="${args} -store.json.interval ${GOFLOW2_STORE_JSON_INTERVAL}"
+    fi
     echo "$args"
 }
 
@@ -295,6 +307,12 @@ _build_udp_args() {
     local args=""
     if [[ -n "${GOFLOW2_UDP_RECV_BUFFER:-}" ]]; then
         args="-udp.recv.buffer ${GOFLOW2_UDP_RECV_BUFFER}"
+    fi
+    # 单个 UDP 报文缓冲区的字节数（0＝默认 9000）。
+    # 调小可降低每包内存占用与队列满时的最坏内存，但报文超过该长度会被
+    # 内核静默截断、数据损坏，必须先用 diag.sh 实测长度分布再调整。
+    if [[ -n "${GOFLOW2_UDP_RECV_PACKET_SIZE:-}" ]]; then
+        args="${args} -udp.recv.packet.size ${GOFLOW2_UDP_RECV_PACKET_SIZE}"
     fi
     echo "$args"
 }
@@ -533,6 +551,8 @@ usage() {
     echo "  GOFLOW2_METRICS    全局统计开关：0/false 关闭全部指标 (default true)"
     echo "  GOFLOW2_MAPPING    mapping.yaml 路径"
     echo "  GOFLOW2_LOGLEVEL   日志级别 (default info)"
+    echo "  GOFLOW2_STORE_JSON_PATH     模板/采样率持久化文件路径（空＝不持久化）"
+    echo "  GOFLOW2_STORE_JSON_INTERVAL 持久化文件写入间隔，如 1m"
     echo "  GOFLOW2_PID_FILE   pid 文件路径"
     echo "  GOFLOW2_DEVICE_STATS_PATH       设备统计端点前缀 (default /device-stats)"
     echo "  GOFLOW2_DEVICE_RETENTION_HOURLY 小时桶保留时长 (default 72h)"
