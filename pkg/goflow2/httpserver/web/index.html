@@ -104,10 +104,14 @@
   .params-group{ padding:8px 14px 4px; }
   .params-group + .params-group{ border-top:1px solid var(--rule); }
   .params-title{ font-size:11px; color:var(--muted); letter-spacing:.04em; margin-bottom:6px; }
-  .params-row{ display:flex; gap:10px; align-items:baseline; padding:2px 0; }
+  /* 每个配置项独占一块：上行是「名称 → 取值」，下行是该项的说明 */
+  .params-item{ padding:6px 0; }
+  .params-item + .params-item{ border-top:1px dotted var(--rule); }
+  .params-row{ display:flex; gap:10px; align-items:baseline; }
   .params-row .p-label{ color:var(--muted); font-size:12px; white-space:nowrap; }
   .params-row .p-value{ font-family:var(--mono); font-size:12px; color:var(--ink);
                         margin-left:auto; text-align:right; word-break:break-all; }
+  .params-desc{ margin-top:2px; font-size:11px; line-height:1.5; color:var(--muted); }
 
   .chips{ display:flex; flex-wrap:wrap; gap:6px; padding:12px 14px; }
   .chip{ display:inline-flex; align-items:center; gap:6px; padding:2px 4px 2px 8px; border:1px solid var(--rule); border-radius:2px; background:var(--panel2); font-size:12px; }
@@ -211,7 +215,6 @@
     <button class="viewtab" id="tab-templates" role="tab" aria-selected="false">模板</button>
   </div>
   <button id="theme-toggle" title="切换到深色">深色</button>
-  <button id="fields-toggle">字段 (0)</button>
   <div class="links" id="links"></div>
   <div class="toolbar">
     <span id="updated" class="muted"></span>
@@ -591,10 +594,6 @@ function fieldKindLabel(kind) {
 function renderOverview() {
   document.getElementById("transport").textContent = CFG.transport || "未设置";
   document.getElementById("format").textContent = CFG.format || "未设置";
-  var btn = document.getElementById("fields-toggle");
-  var n = (CFG.flowFields || []).length;
-  btn.textContent = "字段 (" + n + ")";
-  btn.disabled = n === 0;
 }
 
 // renderParams 渲染「运行参数」卡片：按分组展示当前生效的配置。
@@ -615,31 +614,50 @@ function renderParams() {
     var group = el("div", "params-group");
     group.appendChild(el("div", "params-title", esc(g.group || "")));
     items.forEach(function (it) {
+      var item = el("div", "params-item");
       var row = el("div", "params-row");
       row.appendChild(el("span", "p-label", esc(it.label || "")));
       row.appendChild(el("span", "p-value", esc(it.value || "")));
-      group.appendChild(row);
+      item.appendChild(row);
+      if (it.desc) item.appendChild(el("div", "params-desc", esc(it.desc)));
+      group.appendChild(item);
     });
     wrap.appendChild(group);
   });
   host.appendChild(wrap);
 }
 
+// renderFlowFields 用表格展示输出字段，列与「模板」页的字段详情保持一致，
+// 便于两者对照阅读。
 function renderFlowFields() {
   var host = document.getElementById("fields");
   host.textContent = "";
   var fields = CFG.flowFields || [];
-  if (fields.length === 0) { host.appendChild(el("div", "empty", "无命名字段：raw producer 或未配置 mapping。")); return; }
-  var wrap = el("div", "chips");
-  fields.forEach(function (f) {
-    var chip = el("span", "chip");
-    chip.appendChild(el("span", "chip-name", esc(f.name)));
-    chip.appendChild(el("span", "chip-kind kind-" + esc(f.kind), fieldKindLabel(f.kind)));
-    if (f.source) chip.title = "原始字段：" + f.source;
-    wrap.appendChild(chip);
+  if (fields.length === 0) {
+    host.appendChild(el("div", "empty", "无命名字段：raw producer 或未配置 mapping。"));
+    return;
+  }
+
+  var t = el("table");
+  var thead = el("thead"), htr = el("tr");
+  ["#", "输出字段名", "种类", "原始字段"].forEach(function (label, i) {
+    htr.appendChild(el("th", i === 0 ? "num" : "", label));
   });
-  wrap.appendChild(el("span", "muted", fields.length + " 列"));
-  document.getElementById("fields").appendChild(wrap);
+  thead.appendChild(htr); t.appendChild(thead);
+
+  var tb = el("tbody");
+  fields.forEach(function (f, i) {
+    var tr = el("tr");
+    tr.appendChild(el("td", "num muted mono", String(i)));
+    tr.appendChild(el("td", "mono", esc(f.name)));
+    var kind = el("td");
+    kind.appendChild(el("span", "chip-kind kind-" + esc(f.kind), fieldKindLabel(f.kind)));
+    tr.appendChild(kind);
+    tr.appendChild(el("td", "muted mono", esc(f.source || "—")));
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb);
+  host.appendChild(t);
 }
 
 function refreshHealth() {
@@ -857,10 +875,6 @@ document.getElementById("tpl-filter").addEventListener("input", function (e) {
 
 document.getElementById("refresh").addEventListener("click", refreshAll);
 document.getElementById("interval").addEventListener("change", applyInterval);
-document.getElementById("fields-toggle").addEventListener("click", function () {
-  // 「输出字段」卡片已移入配置页，此按钮作为快捷入口：切到配置页查看。
-  switchView("config");
-});
 document.getElementById("drawer-close").addEventListener("click", closeDrawer);
 document.getElementById("drawer-refresh").addEventListener("click", function () { if (selected) loadDrawer(selected); });
 document.getElementById("overlay").addEventListener("click", closeDrawer);

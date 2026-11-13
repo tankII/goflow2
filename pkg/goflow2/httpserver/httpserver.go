@@ -129,6 +129,9 @@ func StoreHandler(store StoreSource) http.HandlerFunc {
 type ParamItem struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
+	// Desc explains what the item controls, so operators can tell the
+	// difference between similar-looking settings without reading the docs.
+	Desc string `json:"desc,omitempty"`
 }
 
 // ParamGroup groups related configuration entries under one heading.

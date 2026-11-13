@@ -55,8 +55,10 @@ func TestWebDashboardEndpoint(t *testing.T) {
 	// The overview row always exposes transport, format, and the field list.
 	require.Contains(t, body, `id="transport"`)
 	require.Contains(t, body, `id="format"`)
-	require.Contains(t, body, `id="fields-toggle"`)
 	require.Contains(t, body, `id="flowfields"`)
+	// 顶部的「字段」按钮已移除：输出字段改为配置页的常驻表格卡片
+	require.NotContains(t, body, `id="fields-toggle"`)
+	require.Contains(t, body, "输出字段名")
 
 	// Four mutually exclusive views: 收发 / 设备 / 配置 / 模板.
 	// The 配置 view holds the runtime-parameter card and the output-field card.

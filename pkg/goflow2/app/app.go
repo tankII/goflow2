@@ -42,6 +42,7 @@ type App struct {
 //
 // 只挑与收发路径直接相关的项：接收侧看监听参数与 socket 缓冲，发送侧看
 // 传输与输出格式，运行时看影响性能的关键开关。无关配置不堆到界面上。
+// 每项都带一句说明，运维无需翻文档即可区分相近的开关。
 func buildDashboardParams(cfg *config.Config, listeners []listen.ListenerConfig) []httpserver.ParamGroup {
 	groups := []httpserver.ParamGroup{}
 
@@ -56,14 +57,17 @@ func buildDashboardParams(cfg *config.Config, listeners []listen.ListenerConfig)
 			httpserver.ParamItem{
 				Label: "监听 " + l.Scheme,
 				Value: fmt.Sprintf("%s:%d", host, l.Port),
+				Desc:  "接收 NetFlow / sFlow 报文的 UDP 监听地址与端口。",
 			},
 			httpserver.ParamItem{
 				Label: "  socket / worker",
 				Value: fmt.Sprintf("%d / %d", l.NumSockets, l.NumWorkers),
+				Desc:  "socket 数为复用端口的接收套接字个数（分流入口流量）；worker 数为解码协程数（处理能力）。",
 			},
 			httpserver.ParamItem{
 				Label: "  队列容量",
 				Value: fmt.Sprintf("%d（阻塞=%s）", l.QueueSize, onOff(l.Blocking)),
+				Desc:  "应用层接收队列长度。非阻塞模式下队列满即丢弃（应用层丢包）；阻塞模式不丢包但接收协程会卡住。",
 			},
 		)
 	}
@@ -71,6 +75,7 @@ func buildDashboardParams(cfg *config.Config, listeners []listen.ListenerConfig)
 		recv = append(recv, httpserver.ParamItem{
 			Label: "socket 接收缓冲",
 			Value: humanBytes(uint64(cfg.UDPRecvBuffer)),
+			Desc:  "内核 socket 缓冲区（SO_RCVBUF）。它是应用层队列之前的一级缓冲，默认仅 256KB，突发流量会在内核层就溢出（内核层丢包）。受 net.core.rmem_max 限制，需同步调大 sysctl 并重启才生效。",
 		})
 	}
 	if len(recv) > 0 {
@@ -79,28 +84,38 @@ func buildDashboardParams(cfg *config.Config, listeners []listen.ListenerConfig)
 
 	// ── 发送 ──
 	send := []httpserver.ParamItem{
-		{Label: "传输方式", Value: cfg.Transport},
-		{Label: "输出格式", Value: cfg.Format},
-		{Label: "产出方式", Value: cfg.Produce},
+		{Label: "传输方式", Value: cfg.Transport,
+			Desc: "流记录的下游去向：file 落文件、netcat 发 TCP、Kafka 入队。"},
+		{Label: "输出格式", Value: cfg.Format,
+			Desc: "流记录的序列化格式，决定下游字段形态与解析方式。"},
+		{Label: "产出方式", Value: cfg.Produce,
+			Desc: "sample 按采样规则产出流记录；raw 不做映射，原样输出原始字段。"},
 	}
 	if cfg.MappingFile != "" {
-		send = append(send, httpserver.ParamItem{Label: "字段映射", Value: cfg.MappingFile})
+		send = append(send, httpserver.ParamItem{Label: "字段映射", Value: cfg.MappingFile,
+			Desc: "字段映射配置文件，决定原始字段如何重命名、置常量或组合为输出列。"})
 	}
 	groups = append(groups, httpserver.ParamGroup{Group: "发送", Items: send})
 
 	// ── 运行时 ──
 	run := []httpserver.ParamItem{
-		{Label: "HTTP 面板", Value: cfg.Addr},
-		{Label: "指标 / pprof", Value: onOff(cfg.Metrics) + " / " + onOff(cfg.Pprof)},
-		{Label: "模板 TTL", Value: cfg.TemplatesTTL.String() + "（访问续期=" + onOff(cfg.TemplatesExtendOnAccess) + "）"},
-		{Label: "采样率 TTL", Value: cfg.SamplingRatesTTL.String() + "（访问续期=" + onOff(cfg.SamplingRatesExtendOnAccess) + "）"},
+		{Label: "HTTP 面板", Value: cfg.Addr,
+			Desc: "控制台与监控端点的监听地址，留空则不启用 HTTP。"},
+		{Label: "指标 / pprof", Value: onOff(cfg.Metrics) + " / " + onOff(cfg.Pprof),
+			Desc: "指标开关控制 Prometheus 指标与设备统计；pprof 开启 CPU/内存剖析端点。"},
+		{Label: "模板 TTL", Value: cfg.TemplatesTTL.String() + "（访问续期=" + onOff(cfg.TemplatesExtendOnAccess) + "）",
+			Desc: "模板过期时间。过期后设备未重发模板将导致数据无法解码而丢弃；开启访问续期后，正在收流量的模板不会过期。"},
+		{Label: "采样率 TTL", Value: cfg.SamplingRatesTTL.String() + "（访问续期=" + onOff(cfg.SamplingRatesExtendOnAccess) + "）",
+			Desc: "采样率记录的过期时间，机制同上。"},
 	}
 	// GOGC / GOMEMLIMIT 是影响 CPU 与内存的关键开关，从环境变量读取
 	if v := os.Getenv("GOGC"); v != "" {
-		run = append(run, httpserver.ParamItem{Label: "GOGC", Value: v})
+		run = append(run, httpserver.ParamItem{Label: "GOGC", Value: v,
+			Desc: "GC 目标堆增长百分比。调低 → GC 更积极 → 内存下降、CPU 上升（用 CPU 换内存）。"})
 	}
 	if v := os.Getenv("GOMEMLIMIT"); v != "" {
-		run = append(run, httpserver.ParamItem{Label: "GOMEMLIMIT", Value: v})
+		run = append(run, httpserver.ParamItem{Label: "GOMEMLIMIT", Value: v,
+			Desc: "Go 运行时软内存上限。接近时自动加大 GC 力度，避免堆持续膨胀被内核 OOM kill。"})
 	}
 	groups = append(groups, httpserver.ParamGroup{Group: "运行时", Items: run})
 
