@@ -352,8 +352,7 @@ function ledBar(v) {
 function renderQueues(data) {
   renderTable(document.getElementById("queues"),
     [{ label: "协议" }, { label: "地址" }, { label: "深度", num: true }, { label: "容量", num: true }, { label: "使用率", num: true }, { label: "占用" },
-     { label: "应用层丢包", num: true }, { label: "丢包字节", num: true },
-     { label: "疑似截断", num: true }],
+     { label: "应用层丢包", num: true }, { label: "疑似截断", num: true }],
     data, function (q) {
       var tr = el("tr");
       var util = utilization(q.depth, q.capacity);
@@ -369,10 +368,6 @@ function renderQueues(data) {
       var dropCell = el("td", "num mono" + (dropped > 0 ? " drop-warn" : ""), esc(dropped));
       dropCell.title = "应用层接收丢包：接收队列已满而丢弃的报文数（不含内核层丢包）";
       tr.appendChild(dropCell);
-      var dropBytes = Number(q.dropped_bytes) || 0;
-      var dropBytesCell = el("td", "num mono" + (dropBytes > 0 ? " drop-warn" : ""), esc(dropBytes));
-      dropBytesCell.title = "应用层接收丢包的累计字节数（不含内核层丢包）";
-      tr.appendChild(dropBytesCell);
       // 疑似截断：报文长度超过接收缓冲区，超出部分被内核丢弃且不报错
       var trunc = Number(q.truncated_packets) || 0;
       var truncCell = el("td", "num mono" + (trunc > 0 ? " drop-warn" : ""), esc(trunc));

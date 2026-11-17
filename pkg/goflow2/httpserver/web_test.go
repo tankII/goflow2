@@ -33,6 +33,8 @@ func TestWebDashboardEndpoint(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
+	// 页面内嵌启动时注入的运行参数，禁止缓存以免显示过期配置
+	require.Contains(t, rec.Header().Get("Cache-Control"), "no-store")
 	require.Equal(t, "text/html; charset=utf-8", rec.Header().Get("Content-Type"))
 	body := rec.Body.String()
 	require.NotContains(t, body, dashboardConfigPlaceholder)
@@ -73,6 +75,11 @@ func TestWebDashboardEndpoint(t *testing.T) {
 	require.Contains(t, body, `id="params"`)
 	require.Contains(t, body, "运行参数")
 	require.Contains(t, body, "输出字段")
+
+	// 接收队列表只展示丢包报文数，不再展示丢包字节数
+	require.Contains(t, body, "应用层丢包")
+	require.Contains(t, body, "疑似截断")
+	require.NotContains(t, body, "丢包字节")
 
 	// The drill-down drawer offers hourly/daily tabs and a line/bar style
 	// selector, and plots packets and flows as separate single-series rows

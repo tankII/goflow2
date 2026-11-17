@@ -173,6 +173,10 @@ func dashboardHandler(cfg dashboardConfig) http.HandlerFunc {
 	page := strings.Replace(dashboardHTML, dashboardConfigPlaceholder, string(body), 1)
 	return func(wr http.ResponseWriter, r *http.Request) {
 		wr.Header().Add("Content-Type", "text/html; charset=utf-8")
+		// 页面里嵌的是启动时注入的运行参数，配置变更并重启后旧页面会显示
+		// 过期的参数值，容易误判。禁止缓存以免混淆。
+		wr.Header().Add("Cache-Control", "no-cache, no-store, must-revalidate")
+		wr.Header().Add("Pragma", "no-cache")
 		wr.WriteHeader(http.StatusOK)
 		if _, err := wr.Write([]byte(page)); err != nil {
 			slog.Error("error writing HTTP", slog.String("error", err.Error()))
